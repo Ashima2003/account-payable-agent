@@ -55,7 +55,7 @@ Think of the task as:
 """
 
 
-def pdf_to_structured_json(pdf_path: str) -> Invoice:
+def pdf_bytes_to_structured_json(pdf_bytes: bytes) -> Invoice:
     api_key = os.environ.get("LLM_API_KEY")
 
     if not api_key:
@@ -64,9 +64,6 @@ def pdf_to_structured_json(pdf_path: str) -> Invoice:
         )
 
     client = genai.Client(api_key=api_key)
-
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
 
     response = client.models.generate_content(
         model=MODEL,
@@ -98,7 +95,10 @@ def main():
 
     args = parser.parse_args()
 
-    result = pdf_to_structured_json(args.pdf_path)
+    with open(args.pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    result = pdf_bytes_to_structured_json(pdf_bytes)
 
     output = json.dumps(
         result.model_dump(),
