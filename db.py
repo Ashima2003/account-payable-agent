@@ -1,0 +1,135 @@
+import os
+from contextlib import contextmanager
+from datetime import date, datetime
+from typing import Optional
+
+import certifi
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_URL = os.environ["COCKROACHDB_CONNECTION"]
+# The connection string uses sslmode=verify-full, which needs a root CA
+# bundle to validate the server certificate against. Point it at certifi's
+# bundle rather than relying on a system cert path that may not exist
+# (e.g. libpq's default ~/.postgresql/root.crt).
+if "sslrootcert=" not in DB_URL:
+    separator = "&" if "?" in DB_URL else "?"
+    DB_URL = f"{DB_URL}{separator}sslrootcert={certifi.where()}"
+
+# Formats OCR might hand back in invoice_date, tried in order.
+_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d %b %Y", "%B %d, %Y")
+
+
+def parse_invoice_date(raw: Optional[str]) -> Optional[date]:
+    if not raw:
+        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(raw.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@contextmanager
+def get_connection():
+    conn = psycopg2.connect(DB_URL)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def fetch_unprocessed_invoice_documents(conn):
+    """document rows for INVOICE work items that have no work_execution row yet."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT d.work_id, d.document_id, d.document_link
+            FROM document d
+            JOIN work_item wi ON wi.work_id = d.work_id
+            LEFT JOIN work_execution we ON we.work_id = d.work_id
+            WHERE wi.process_type = 'INVOICE'
+              AND we.work_id IS NULL
+            """
+        )
+        return cur.fetchall()
+
+
+def claim_work_item(conn, work_id: str) -> bool:
+    """Atomically flip a work item to EXTRACTION_STARTED.
+
+    Returns True if this call created the row (i.e. won the claim), False if
+    a work_execution row already existed (another worker got there first).
+    Safe to call even with multiple concurrent pollers.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO work_execution (work_id, status)
+            VALUES (%s, 'EXTRACTION_STARTED')
+            ON CONFLICT (work_id) DO NOTHING
+            RETURNING work_id
+            """,
+            (work_id,),
+        )
+        won = cur.fetchone() is not None
+        if won:
+            cur.execute(
+                "INSERT INTO work_execution_log (work_id, status) VALUES (%s, 'EXTRACTION_STARTED')",
+                (work_id,),
+            )
+    conn.commit()
+    return won
+
+
+def mark_status(conn, work_id: str, status: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPSERT INTO work_execution (work_id, status, updated_at)
+            VALUES (%s, %s, now())
+            """,
+            (work_id, status),
+        )
+        cur.execute(
+            "INSERT INTO work_execution_log (work_id, status) VALUES (%s, %s)",
+            (work_id, status),
+        )
+    conn.commit()
+
+
+def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
+    """Insert the (placeholder, until real invoice-population logic lands)
+    invoice row plus its line_items, from an ocr.Invoice instance."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO invoice (
+                invoice_work_id, invoice_number, invoice_date,
+                vendor_name, total_amount, invoice_currency
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                work_id,
+                invoice_data.invoice_no or "UNKNOWN",
+                parse_invoice_date(invoice_data.invoice_date),
+                invoice_data.customer_name or "UNKNOWN",
+                invoice_data.invoice_amount or 0,
+                "USD",
+            ),
+        )
+
+        for idx, li in enumerate(invoice_data.line_items or [], start=1):
+            cur.execute(
+                """
+                INSERT INTO line_item (invoice_work_id, line_number, quantity, line_amount)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (work_id, idx, li.quantity, li.amount or 0),
+            )
+    conn.commit()
