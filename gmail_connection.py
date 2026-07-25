@@ -2,6 +2,7 @@ import imaplib
 import email
 import os
 from email.header import decode_header
+from typing import List, NamedTuple, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -10,34 +11,30 @@ load_dotenv()
 EMAIL = os.environ["EMAIL"]
 APP_PASSWORD = os.environ["APP_PASSWORD"]
 
-QUERY_FOLDER = "Query"
-MAX_EMAILS = 5
-
-mail = imaplib.IMAP4_SSL("imap.gmail.com")
-mail.login(EMAIL, APP_PASSWORD)
-
-mail.select("INBOX")
-
-# Get all email IDs
-status, data = mail.search(None, "ALL")
-
-if status != "OK":
-    print("Failed to fetch emails.")
-    mail.logout()
-    exit()
-
-all_ids = data[0].split()
-
-print(f"Total emails in inbox: {len(all_ids)}")
-
-# Create Query folder if it doesn't exist
-try:
-    mail.create(QUERY_FOLDER)
-except:
-    pass
+# Attachments that count as an "invoice or document" for ingestion purposes.
+QUALIFYING_CONTENT_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+QUALIFYING_EXTENSIONS = (".pdf", ".doc", ".docx")
 
 
-def decode(value):
+class Attachment(NamedTuple):
+    filename: str
+    content_bytes: bytes
+
+
+class ParsedEmail(NamedTuple):
+    eid: bytes
+    subject: str
+    sender: str
+    date: str
+    body: str
+    attachments: List[Attachment]
+
+
+def decode(value) -> str:
     if value is None:
         return ""
 
@@ -49,81 +46,103 @@ def decode(value):
     return decoded
 
 
-processed = 0
+def connect() -> imaplib.IMAP4_SSL:
+    mail = imaplib.IMAP4_SSL("imap.gmail.com")
+    mail.login(EMAIL, APP_PASSWORD)
+    mail.select("INBOX")
+    return mail
 
-# Traverse from newest -> oldest
-for eid in reversed(all_ids):
 
-    if processed == MAX_EMAILS:
-        break
+def _is_qualifying_attachment(content_type: str, filename: str) -> bool:
+    if content_type in QUALIFYING_CONTENT_TYPES:
+        return True
+    return filename.lower().endswith(QUALIFYING_EXTENSIONS)
 
-    # Check if email is unread
-    status, flags_data = mail.fetch(eid, "(FLAGS)")
 
-    if status != "OK":
-        continue
-
-    flags = flags_data[0].decode()
-
-    if "\\Seen" in flags:
-        continue
-
-    # Fetch email
-    status, msg_data = mail.fetch(eid, "(RFC822)")
-
-    if status != "OK":
-        continue
-
-    msg = email.message_from_bytes(msg_data[0][1])
-
-    subject = decode(msg["Subject"])
-    sender = decode(msg["From"])
-    date = decode(msg["Date"])
-
+def _extract_body_and_attachments(msg) -> Tuple[str, List[Attachment]]:
     body = ""
+    attachments: List[Attachment] = []
 
-    if msg.is_multipart():
-        for part in msg.walk():
-
-            if (
-                part.get_content_type() == "text/plain"
-                and "attachment" not in str(part.get("Content-Disposition"))
-            ):
-
-                payload = part.get_payload(decode=True)
-
-                if payload:
-                    body = payload.decode(errors="ignore")
-                    break
-    else:
+    if not msg.is_multipart():
         payload = msg.get_payload(decode=True)
-
         if payload:
             body = payload.decode(errors="ignore")
+        return body, attachments
 
-    print("=" * 80)
-    print("From   :", sender)
-    print("Subject:", subject)
-    print("Date   :", date)
-    print("-" * 80)
-    print(body[:500].strip())
-    print()
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
 
-    # Mark as read
+        filename = decode(part.get_filename())
+        content_type = part.get_content_type()
+
+        if filename and _is_qualifying_attachment(content_type, filename):
+            payload = part.get_payload(decode=True)
+            if payload:
+                attachments.append(Attachment(filename=filename, content_bytes=payload))
+            continue
+
+        if (
+            not body
+            and content_type == "text/plain"
+            and "attachment" not in str(part.get("Content-Disposition"))
+        ):
+            payload = part.get_payload(decode=True)
+            if payload:
+                body = payload.decode(errors="ignore")
+
+    return body, attachments
+
+
+def fetch_unread_messages(mail, max_messages: Optional[int] = None) -> List[ParsedEmail]:
+    """Read-only: fetches unread messages and parses them, without marking
+    anything as seen or otherwise mutating mailbox state."""
+    status, data = mail.search(None, "UNSEEN")
+    if status != "OK":
+        return []
+
+    eids = list(reversed(data[0].split()))  # newest first
+    if max_messages is not None:
+        eids = eids[:max_messages]
+
+    parsed_emails = []
+    for eid in eids:
+        status, msg_data = mail.fetch(eid, "(RFC822)")
+        if status != "OK":
+            continue
+
+        msg = email.message_from_bytes(msg_data[0][1])
+        body, attachments = _extract_body_and_attachments(msg)
+
+        parsed_emails.append(
+            ParsedEmail(
+                eid=eid,
+                subject=decode(msg["Subject"]),
+                sender=decode(msg["From"]),
+                date=decode(msg["Date"]),
+                body=body,
+                attachments=attachments,
+            )
+        )
+
+    return parsed_emails
+
+
+def mark_seen(mail, eid: bytes) -> None:
     mail.store(eid, "+FLAGS", "\\Seen")
 
-    # Copy to Query folder
-    result, _ = mail.copy(eid, QUERY_FOLDER)
 
+def move_to_folder(mail, eid: bytes, folder: str) -> None:
+    try:
+        mail.create(folder)
+    except imaplib.IMAP4.error:
+        pass  # folder already exists
+
+    result, _ = mail.copy(eid, folder)
     if result == "OK":
-        # Delete original from Inbox
         mail.store(eid, "+FLAGS", "\\Deleted")
 
-    processed += 1
 
-# Permanently remove deleted emails
-mail.expunge()
-
-mail.logout()
-
-print(f"\nProcessed {processed} unread emails.")
+def expunge_and_logout(mail) -> None:
+    mail.expunge()
+    mail.logout()
