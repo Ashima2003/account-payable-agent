@@ -117,11 +117,17 @@ def insert_email_scan(conn, count_of_email: int) -> str:
     return scan_id
 
 
-def insert_email(conn, scan_id: str, email_content: str) -> str:
+def insert_email(
+    conn, scan_id: str, email_from: str, email_subject: str, email_content: str
+) -> str:
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO email (scan_id, email_content) VALUES (%s, %s) RETURNING email_id",
-            (scan_id, email_content),
+            """
+            INSERT INTO email (scan_id, email_from, email_subject, email_content)
+            VALUES (%s, %s, %s, %s)
+            RETURNING email_id
+            """,
+            (scan_id, email_from, email_subject, email_content),
         )
         email_id = cur.fetchone()[0]
     conn.commit()
@@ -157,9 +163,9 @@ def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
             """
             INSERT INTO invoice (
                 invoice_work_id, invoice_number, invoice_date,
-                vendor_name, total_amount, invoice_currency
+                vendor_name, total_amount, invoice_currency, purchase_order
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 work_id,
@@ -168,15 +174,19 @@ def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
                 invoice_data.customer_name or "UNKNOWN",
                 invoice_data.invoice_amount or 0,
                 "USD",
+                invoice_data.purchase_order,
             ),
         )
 
         for idx, li in enumerate(invoice_data.line_items or [], start=1):
             cur.execute(
                 """
-                INSERT INTO line_item (invoice_work_id, line_number, quantity, line_amount)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO line_item (
+                    invoice_work_id, line_number, description,
+                    quantity, unit_price, line_amount
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (work_id, idx, li.quantity, li.amount or 0),
+                (work_id, idx, li.description, li.quantity, li.unit_price, li.amount or 0),
             )
     conn.commit()

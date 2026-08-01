@@ -17,7 +17,7 @@ MAX_EMAILS_PER_SCAN = 50
 
 
 def _format_email_content(parsed: ParsedEmail) -> str:
-    return f"From: {parsed.sender}\nSubject: {parsed.subject}\nDate: {parsed.date}\n\n{parsed.body}"
+    return f"Date: {parsed.date}\n\n{parsed.body}"
 
 
 def _record_attachment(conn, email_id: str, attachment) -> None:
@@ -38,7 +38,9 @@ def _record_email(conn, scan_id: str, parsed: ParsedEmail) -> bool:
     attachment on it also succeeded) -- callers use this to decide whether
     the source email is safe to move out of the inbox."""
     try:
-        email_id = insert_email(conn, scan_id, _format_email_content(parsed))
+        email_id = insert_email(
+            conn, scan_id, parsed.sender, parsed.subject, _format_email_content(parsed)
+        )
     except Exception:
         print(f"Failed to record email {parsed.subject!r}:")
         traceback.print_exc()

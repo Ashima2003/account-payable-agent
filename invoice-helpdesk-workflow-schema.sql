@@ -26,8 +26,10 @@ CREATE TABLE email_scan (
 );
 
 CREATE TABLE email (
-    email_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scan_id     UUID NOT NULL REFERENCES email_scan(scan_id),
+    email_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scan_id       UUID NOT NULL REFERENCES email_scan(scan_id),
+    email_from    STRING NOT NULL,
+    email_subject STRING NOT NULL,
     email_content STRING NOT NULL,
     INDEX idx_email_scan (scan_id)
 );
@@ -58,6 +60,7 @@ CREATE TABLE invoice (
     vendor_name       STRING NOT NULL,
     total_amount      DECIMAL(18,2) NOT NULL,
     invoice_currency  STRING(3) NOT NULL,
+    purchase_order    STRING,   -- PO number, when the invoice references one; not every invoice has one
     -- candidate lookup for duplicate-invoice detection
     INDEX idx_invoice_dup_lookup (vendor_name, invoice_number, invoice_currency)
 );

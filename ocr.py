@@ -20,7 +20,9 @@ MODEL = os.environ["LLM_MODEL"]
 # ------------------------------------------------------------------
 
 class LineItem(BaseModel):
+    description: Optional[str] = None
     quantity: Optional[float] = None
+    unit_price: Optional[float] = None
     amount: Optional[float] = None
 
 
@@ -30,6 +32,7 @@ class Invoice(BaseModel):
     customer_name: Optional[str] = None
     invoice_amount: Optional[float] = None
     tax_amount: Optional[float] = None
+    purchase_order: Optional[str] = None
     line_items: Optional[List[LineItem]] = None
 
 

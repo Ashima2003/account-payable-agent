@@ -107,7 +107,7 @@ def fetch_unread_messages(mail, max_messages: Optional[int] = None) -> List[Pars
 
     parsed_emails = []
     for eid in eids:
-        status, msg_data = mail.fetch(eid, "(RFC822)")
+        status, msg_data = mail.fetch(eid, "(BODY.PEEK[])")
         if status != "OK":
             continue
 
