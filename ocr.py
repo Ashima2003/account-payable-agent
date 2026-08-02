@@ -33,6 +33,7 @@ class Invoice(BaseModel):
     invoice_amount: Optional[float] = None
     tax_amount: Optional[float] = None
     purchase_order: Optional[str] = None
+    currency: Optional[str] = None
     line_items: Optional[List[LineItem]] = None
 
 

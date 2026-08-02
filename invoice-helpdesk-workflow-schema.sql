@@ -96,7 +96,11 @@ CREATE TABLE invoice (
     invoice_currency  STRING(3) NOT NULL,
     purchase_order    STRING,   -- PO number, when the invoice references one; not every invoice has one
     -- candidate lookup for duplicate-invoice detection
-    INDEX idx_invoice_dup_lookup (vendor_name, invoice_number, invoice_currency)
+    INDEX idx_invoice_dup_lookup (vendor_name, invoice_number, invoice_currency),
+    -- exact 5-field duplicate check: invoice_number + purchase_order +
+    -- invoice_date + total_amount + invoice_currency all matching means
+    -- this invoice has already been processed -- decline re-processing it.
+    INDEX idx_invoice_duplicate_check (invoice_number, purchase_order, invoice_date, total_amount, invoice_currency)
 );
 
 -- One row per line on the invoice. line_number preserves the original
@@ -136,6 +140,9 @@ CREATE TABLE work_execution_log (
     timestamp  TIMESTAMPTZ NOT NULL DEFAULT now(),
     log_id     UUID NOT NULL DEFAULT gen_random_uuid(),   -- tiebreaker for same-timestamp writes
     status     STRING NOT NULL,
+    -- freeform context for this step -- e.g. which prior work_id a
+    -- duplicate/PO match was against, or the drafted decline reply text.
+    detail     STRING,
     -- leading column (work_id, random UUID) spreads different work items
     -- across ranges; trailing (timestamp, log_id) keeps one work_id's own
     -- history physically contiguous and pre-sorted, so "get history for
