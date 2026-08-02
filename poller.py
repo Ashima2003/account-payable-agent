@@ -23,8 +23,9 @@ POLL_INTERVAL_SECONDS = 10
 
 def _check_duplicate(conn, work_id, invoice_data) -> bool:
     """Returns True if this invoice has already been processed -- in which
-    case it's declined and a draft decline reply is logged, and the
-    caller must not go on to insert it into invoice/line_item."""
+    case this execution is marked SKIPPED (with a draft decline reply
+    logged) and the caller must not go on to insert it into
+    invoice/line_item."""
     duplicate_work_id = find_duplicate_invoice(
         conn,
         invoice_number=invoice_data.invoice_no or "UNKNOWN",
@@ -39,11 +40,11 @@ def _check_duplicate(conn, work_id, invoice_data) -> bool:
 
     reply = build_duplicate_decline_reply(invoice_data.invoice_no, invoice_data.purchase_order)
     append_log(
-        conn, work_id, "DECLINED_DUPLICATE",
+        conn, work_id, "SKIPPED",
         detail=f"duplicate of work_id {duplicate_work_id}; draft_reply: {reply}",
     )
-    mark_status(conn, work_id, "DECLINED_DUPLICATE")
-    print(f"[{work_id}] declined: duplicate of {duplicate_work_id}")
+    mark_status(conn, work_id, "SKIPPED")
+    print(f"[{work_id}] skipped: duplicate of {duplicate_work_id}")
     return True
 
 
