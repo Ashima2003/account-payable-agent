@@ -155,6 +155,126 @@ def insert_work_item_and_document(
     conn.commit()
 
 
+def insert_invoice_source_and_line_items(conn, work_id: str, invoice_data):
+    """Insert the raw (pre-validation) OCR output into invoice_source /
+    line_item_source, as-is -- nulls stay null, no placeholder defaults.
+    This is what duplicate/PO validation for later invoices is checked
+    against, so it has to reflect exactly what the model returned."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO invoice_source (
+                invoice_work_id, invoice_number, invoice_date,
+                vendor_name, total_amount, invoice_currency, purchase_order
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                work_id,
+                invoice_data.invoice_no,
+                parse_invoice_date(invoice_data.invoice_date),
+                invoice_data.customer_name,
+                invoice_data.invoice_amount,
+                invoice_data.currency,
+                invoice_data.purchase_order,
+            ),
+        )
+
+        for idx, li in enumerate(invoice_data.line_items or [], start=1):
+            cur.execute(
+                """
+                INSERT INTO line_item_source (
+                    invoice_work_id, line_number, description,
+                    quantity, unit_price, line_amount
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (work_id, idx, li.description, li.quantity, li.unit_price, li.amount),
+            )
+    conn.commit()
+
+
+def find_duplicate_invoice(
+    conn,
+    invoice_number: str,
+    purchase_order: Optional[str],
+    invoice_date,
+    total_amount,
+    invoice_currency: str,
+    exclude_work_id: str,
+) -> Optional[str]:
+    """Exact 5-field match (invoice_number, purchase_order, invoice_date,
+    total_amount, invoice_currency) against already-validated invoices.
+    Returns the existing invoice_work_id if this invoice has already been
+    processed, else None. `IS NOT DISTINCT FROM` is used for the nullable
+    fields so two invoices that both omit a PO/date still count as a
+    match on that field rather than never matching (NULL = NULL is
+    normally unknown, not true)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT invoice_work_id FROM invoice
+            WHERE invoice_number = %s
+              AND purchase_order IS NOT DISTINCT FROM %s
+              AND invoice_date IS NOT DISTINCT FROM %s
+              AND total_amount = %s
+              AND invoice_currency = %s
+              AND invoice_work_id != %s
+            LIMIT 1
+            """,
+            (invoice_number, purchase_order, invoice_date, total_amount, invoice_currency, exclude_work_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def find_po_in_source(conn, purchase_order: str, exclude_work_id: str) -> Optional[str]:
+    """A PO is treated as validated if it appears on some other, earlier
+    invoice_source row -- i.e. we've genuinely seen this PO before on a
+    document that came through the pipeline. Returns that row's
+    invoice_work_id (the earliest match) so its line items can be pulled
+    for comparison, or None if the PO has never been seen."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT invoice_work_id FROM invoice_source
+            WHERE purchase_order = %s AND invoice_work_id != %s
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (purchase_order, exclude_work_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def fetch_line_items_source(conn, invoice_work_id: str):
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT line_number, quantity, unit_price, line_amount
+            FROM line_item_source
+            WHERE invoice_work_id = %s
+            ORDER BY line_number
+            """,
+            (invoice_work_id,),
+        )
+        return cur.fetchall()
+
+
+def append_log(conn, work_id: str, status: str, detail: Optional[str] = None) -> None:
+    """Append a breadcrumb to work_execution_log without touching the
+    current-status row in work_execution -- for intermediate steps (PO
+    validation outcome, duplicate match reference) that are worth
+    recording but shouldn't overwrite the pipeline's current status."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_execution_log (work_id, status, detail) VALUES (%s, %s, %s)",
+            (work_id, status, detail),
+        )
+    conn.commit()
+
+
 def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
     """Insert the (placeholder, until real invoice-population logic lands)
     invoice row plus its line_items, from an ocr.Invoice instance."""
@@ -173,7 +293,7 @@ def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
                 parse_invoice_date(invoice_data.invoice_date),
                 invoice_data.customer_name or "UNKNOWN",
                 invoice_data.invoice_amount or 0,
-                "USD",
+                invoice_data.currency or "USD",
                 invoice_data.purchase_order,
             ),
         )
