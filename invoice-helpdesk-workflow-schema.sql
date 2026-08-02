@@ -1,6 +1,7 @@
 -- ============================================================================
 -- Invoice / Helpdesk Work Item Schema — CockroachDB
--- Tables: email_scan, email, work_item, document, invoice, line_item, helpdesk, work_execution, work_execution_log
+-- Tables: email_scan, email, work_item, document, invoice_source, line_item_source,
+--         invoice, line_item, helpdesk, work_execution, work_execution_log
 -- ============================================================================
 -- Design notes:
 --   * work_id (and all other *_id columns) are random UUIDs — CockroachDB
@@ -50,6 +51,39 @@ CREATE TABLE document (
     work_id        UUID PRIMARY KEY REFERENCES work_item(work_id),
     document_id    UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
     document_link  STRING NOT NULL   -- S3 URI
+);
+
+-- Raw extraction output, one row per invoice work item, written straight
+-- from OCR before any validation. Same shape as `invoice` below, but
+-- every column here is nullable -- the extraction model returns null for
+-- anything it isn't confident about, and this table has to be able to
+-- hold that as-is. Validation reads a work_id's row out of this table,
+-- and only a row that passes validation ever gets copied into `invoice`.
+CREATE TABLE invoice_source (
+    invoice_work_id   UUID PRIMARY KEY REFERENCES work_item(work_id),
+    invoice_number    STRING,
+    invoice_date      DATE,
+    vendor_name       STRING,
+    total_amount      DECIMAL(18,2),
+    invoice_currency  STRING(3),
+    purchase_order    STRING,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Raw line items as extracted, one row per line, mirroring `line_item`
+-- below. References invoice_source (not invoice) since these rows are
+-- written before validation -- a work_id can have line_item_source rows
+-- with no corresponding validated line_item rows yet.
+CREATE TABLE line_item_source (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_work_id   UUID NOT NULL REFERENCES invoice_source(invoice_work_id),
+    line_number       INT4 NOT NULL,
+    description       STRING,
+    quantity          DECIMAL(18,4),
+    unit_price        DECIMAL(18,4),
+    line_amount       DECIMAL(18,2),
+    UNIQUE (invoice_work_id, line_number),
+    INDEX idx_line_item_source_invoice (invoice_work_id, line_number)
 );
 
 -- Extension table: only ever populated for work_item.process_type = 'INVOICE'.
