@@ -203,13 +203,17 @@ def find_duplicate_invoice(
     invoice_currency: str,
     exclude_work_id: str,
 ) -> Optional[str]:
-    """Exact 5-field match (invoice_number, purchase_order, invoice_date,
+    """5-field match (invoice_number, purchase_order, invoice_date,
     total_amount, invoice_currency) against already-validated invoices.
     Returns the existing invoice_work_id if this invoice has already been
     processed, else None. `IS NOT DISTINCT FROM` is used for the nullable
     fields so two invoices that both omit a PO/date still count as a
     match on that field rather than never matching (NULL = NULL is
-    normally unknown, not true)."""
+    normally unknown, not true). total_amount is matched within a cent
+    rather than by exact equality -- re-running OCR on the identical PDF
+    has been observed to return e.g. 476.698 one time and 476.70 (stored,
+    already-rounded) the next, and exact `=` against a DECIMAL(18,2)
+    column silently misses that as a match."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -217,12 +221,15 @@ def find_duplicate_invoice(
             WHERE invoice_number = %s
               AND purchase_order IS NOT DISTINCT FROM %s
               AND invoice_date IS NOT DISTINCT FROM %s
-              AND total_amount = %s
+              AND total_amount BETWEEN %s - 0.01 AND %s + 0.01
               AND invoice_currency = %s
               AND invoice_work_id != %s
             LIMIT 1
             """,
-            (invoice_number, purchase_order, invoice_date, total_amount, invoice_currency, exclude_work_id),
+            (
+                invoice_number, purchase_order, invoice_date,
+                total_amount, total_amount, invoice_currency, exclude_work_id,
+            ),
         )
         row = cur.fetchone()
         return row[0] if row else None
