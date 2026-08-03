@@ -1,7 +1,7 @@
 import traceback
 import uuid
 
-from db import (
+from db.repository import (
     find_invoice_by_work_id,
     get_connection,
     insert_email,
@@ -9,8 +9,8 @@ from db import (
     insert_work_item_and_document,
     insert_work_item_and_helpdesk,
 )
-from email_classification import extract_work_id
-from gmail_connection import (
+from services.email_classification import extract_work_id
+from clients.gmail_client import (
     ParsedEmail,
     connect,
     expunge_and_logout,
@@ -18,7 +18,7 @@ from gmail_connection import (
     mark_seen,
     move_to_folder,
 )
-from s3_client import upload_attachment_bytes
+from clients.s3_client import upload_attachment_bytes
 
 PROCESSED_FOLDER = "Processed"
 MAX_EMAILS_PER_SCAN = 50
@@ -151,7 +151,3 @@ def run_ingestion():
             move_to_folder(mail, eid, PROCESSED_FOLDER)
     finally:
         expunge_and_logout(mail)
-
-
-if __name__ == "__main__":
-    run_ingestion()

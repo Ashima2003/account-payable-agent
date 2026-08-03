@@ -1,15 +1,9 @@
 import imaplib
 import email
-import os
 from email.header import decode_header
 from typing import List, NamedTuple, Optional, Tuple
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-EMAIL = os.environ["EMAIL"]
-APP_PASSWORD = os.environ["APP_PASSWORD"]
+import config
 
 # Attachments that count as an "invoice or document" for ingestion purposes.
 QUALIFYING_CONTENT_TYPES = {
@@ -48,7 +42,7 @@ def decode(value) -> str:
 
 def connect() -> imaplib.IMAP4_SSL:
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail.login(EMAIL, APP_PASSWORD)
+    mail.login(config.EMAIL, config.APP_PASSWORD)
     mail.select("INBOX")
     return mail
 

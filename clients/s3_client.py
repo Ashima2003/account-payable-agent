@@ -1,19 +1,17 @@
-import os
 from urllib.parse import urlparse
 
 import boto3
-from dotenv import load_dotenv
 
-load_dotenv()
+import config
 
 _s3 = boto3.client(
     "s3",
-    region_name=os.environ["AWS_REGION"],
-    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    region_name=config.AWS_REGION,
+    aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
 )
 
-_BUCKET = os.environ["AWS_S3_BUCKET"]
+_BUCKET = config.AWS_S3_BUCKET
 
 
 def fetch_document_bytes(document_link: str) -> bytes:
