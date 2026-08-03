@@ -164,3 +164,21 @@ CREATE TABLE work_execution_log (
     -- this work_id" is a single-range scan with no secondary index needed.
     PRIMARY KEY (work_id, timestamp, log_id)
 );
+
+-- Transactional outbox: publishing a message to an SQS queue is recorded
+-- in the same DB transaction as the business write it's about (e.g.
+-- work_item + document), instead of being a separate action that can
+-- fail independently -- a DB commit succeeding but the SQS call right
+-- after it failing would otherwise silently lose that message. A relay
+-- worker (workers/outbox_relay_worker.py) polls for published = false
+-- rows, publishes them, and flips the flag; a failed publish just stays
+-- unpublished and gets retried on the next pass instead of being lost.
+CREATE TABLE queue_outbox (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    queue_name    STRING NOT NULL,   -- 'invoice' | 'helpdesk' | 'other'
+    payload       JSONB NOT NULL,
+    published     BOOL NOT NULL DEFAULT false,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at  TIMESTAMPTZ,
+    INDEX idx_outbox_unpublished (created_at) WHERE NOT published
+);

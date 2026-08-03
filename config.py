@@ -26,3 +26,10 @@ LLM_MODEL = os.environ["LLM_MODEL"]
 # Optional (not os.environ[...]) -- callers that need it check for None
 # themselves and raise a friendlier, call-site-specific error message.
 LLM_API_KEY = os.environ.get("LLM_API_KEY")
+
+# Optional and unset until the queues are actually created -- everything
+# else in the app has to keep working without them (the outbox table
+# fills up either way; only the relay/consumer workers need these set).
+SQS_INVOICE_QUEUE_URL = os.environ.get("SQS_INVOICE_QUEUE_URL")
+SQS_HELPDESK_QUEUE_URL = os.environ.get("SQS_HELPDESK_QUEUE_URL")
+SQS_OTHER_QUEUE_URL = os.environ.get("SQS_OTHER_QUEUE_URL")
