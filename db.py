@@ -157,6 +157,37 @@ def insert_work_item_and_document(
     conn.commit()
 
 
+def find_invoice_by_work_id(conn, work_id: str) -> Optional[str]:
+    """Confirms `work_id` (extracted from an incoming email that's
+    referencing a prior invoice) actually corresponds to an
+    already-validated invoice. helpdesk rows require a non-null
+    invoice_work_id by schema design -- a referenced work_id that doesn't
+    exist yet, or exists but was never an invoice, can't be recorded as a
+    helpdesk item. Returns work_id itself (unchanged) if valid, else None
+    -- same Optional[str] shape as the other find_* lookups, so callers
+    don't need to special-case this one."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT invoice_work_id FROM invoice WHERE invoice_work_id = %s", (work_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_work_id: str) -> None:
+    """Insert the work_item (process_type=HELPDESK) and its 1:1 helpdesk
+    row together, in one transaction -- mirrors insert_work_item_and_document
+    for the invoice path."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_item (work_id, email_id, process_type) VALUES (%s, %s, %s)",
+            (work_id, email_id, "HELPDESK"),
+        )
+        cur.execute(
+            "INSERT INTO helpdesk (helpdesk_work_id, invoice_work_id) VALUES (%s, %s)",
+            (work_id, invoice_work_id),
+        )
+    conn.commit()
+
+
 def insert_invoice_source_and_line_items(conn, work_id: str, invoice_data):
     """Insert the raw (pre-validation) OCR output into invoice_source /
     line_item_source, as-is -- nulls stay null, no placeholder defaults.
