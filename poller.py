@@ -4,19 +4,21 @@ import traceback
 from db import (
     append_log,
     claim_work_item,
-    fetch_line_items_source,
+    fetch_line_item_comparison,
     fetch_unprocessed_invoice_documents,
     find_duplicate_invoice,
     find_po_in_source,
+    find_similar_vendor,
     get_connection,
     insert_invoice_and_line_items,
     insert_invoice_source_and_line_items,
     mark_status,
     parse_invoice_date,
 )
+from embeddings import embed_text
 from ocr import pdf_bytes_to_structured_json
 from s3_client import fetch_document_bytes
-from validation import build_duplicate_decline_reply, lines_match
+from validation import build_duplicate_decline_reply, lines_match, vendor_is_match
 
 POLL_INTERVAL_SECONDS = 10
 
@@ -63,8 +65,13 @@ def _check_po(conn, work_id, invoice_data) -> None:
         print(f"[{work_id}] PO {purchase_order!r} not found in invoice_source -- unverified")
         return
 
-    source_lines = fetch_line_items_source(conn, source_work_id)
-    if lines_match(source_lines, invoice_data.line_items or []):
+    # Both sides are read out of line_item_source -- this invoice's own
+    # rows (inserted earlier in process_document, embeddings included) and
+    # the matched PO's rows -- rather than comparing DB rows against the
+    # in-memory OCR object, since description matching now needs the
+    # embedding that's only stored in the table.
+    comparison_rows = fetch_line_item_comparison(conn, current_work_id=work_id, source_work_id=source_work_id)
+    if lines_match(comparison_rows):
         append_log(conn, work_id, "PO_VALIDATED", detail=f"matches invoice_source work_id {source_work_id}")
         print(f"[{work_id}] PO {purchase_order!r} validated against {source_work_id}")
     else:
@@ -73,6 +80,23 @@ def _check_po(conn, work_id, invoice_data) -> None:
             detail=f"line items differ from invoice_source work_id {source_work_id}",
         )
         print(f"[{work_id}] PO {purchase_order!r} line items do NOT match {source_work_id}")
+
+
+def _check_vendor(conn, work_id, vendor_embedding) -> None:
+    """Informational, like PO validation: does this vendor's name embed
+    close to a vendor we've already seen elsewhere in `invoice`? Catches
+    "Ashima Anand" vs "Ashima Anand Pvt Ltd" as the same vendor without
+    requiring an exact string match. Logged, doesn't block extraction."""
+    match = find_similar_vendor(conn, vendor_embedding, exclude_work_id=work_id)
+    if match is not None and vendor_is_match(match["distance"]):
+        append_log(
+            conn, work_id, "VENDOR_MATCHED",
+            detail=f"matches vendor on work_id {match['invoice_work_id']} ({match['vendor_name']!r}, distance={match['distance']:.4f})",
+        )
+        print(f"[{work_id}] vendor matches {match['vendor_name']!r} (work_id {match['invoice_work_id']})")
+    else:
+        append_log(conn, work_id, "VENDOR_NEW", detail="no sufficiently similar vendor found in invoice")
+        print(f"[{work_id}] vendor not matched to any known vendor")
 
 
 def process_document(conn, work_id, document_link):
@@ -95,7 +119,12 @@ def process_document(conn, work_id, document_link):
 
         _check_po(conn, work_id, invoice_data)
 
-        insert_invoice_and_line_items(conn, work_id, invoice_data)
+        # Computed once and reused for both the similarity lookup and the
+        # final insert below, rather than embedding the vendor name twice.
+        vendor_embedding = embed_text(invoice_data.customer_name)
+        _check_vendor(conn, work_id, vendor_embedding)
+
+        insert_invoice_and_line_items(conn, work_id, invoice_data, vendor_embedding)
         mark_status(conn, work_id, "EXTRACTION_COMPLETED")
         print(f"[{work_id}] extraction completed")
     except Exception:
