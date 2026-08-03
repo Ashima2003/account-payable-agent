@@ -157,14 +157,17 @@ def insert_work_item_and_document(
     conn.commit()
 
 
-def find_invoice_work_id_by_po(conn, purchase_order: str) -> Optional[str]:
-    """Which validated invoice a PO number belongs to, so an incoming
-    helpdesk query that references that PO can be linked to it. helpdesk
-    rows require a non-null invoice_work_id by schema design -- a query
-    about a PO we haven't processed an invoice for yet can't be recorded
-    as a helpdesk item until that invoice exists."""
+def find_invoice_by_work_id(conn, work_id: str) -> Optional[str]:
+    """Confirms `work_id` (extracted from an incoming email that's
+    referencing a prior invoice) actually corresponds to an
+    already-validated invoice. helpdesk rows require a non-null
+    invoice_work_id by schema design -- a referenced work_id that doesn't
+    exist yet, or exists but was never an invoice, can't be recorded as a
+    helpdesk item. Returns work_id itself (unchanged) if valid, else None
+    -- same Optional[str] shape as the other find_* lookups, so callers
+    don't need to special-case this one."""
     with conn.cursor() as cur:
-        cur.execute("SELECT invoice_work_id FROM invoice WHERE purchase_order = %s LIMIT 1", (purchase_order,))
+        cur.execute("SELECT invoice_work_id FROM invoice WHERE invoice_work_id = %s", (work_id,))
         row = cur.fetchone()
         return row[0] if row else None
 

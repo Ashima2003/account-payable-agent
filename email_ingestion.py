@@ -2,14 +2,14 @@ import traceback
 import uuid
 
 from db import (
-    find_invoice_work_id_by_po,
+    find_invoice_by_work_id,
     get_connection,
     insert_email,
     insert_email_scan,
     insert_work_item_and_document,
     insert_work_item_and_helpdesk,
 )
-from email_classification import extract_po_number
+from email_classification import extract_work_id
 from gmail_connection import (
     ParsedEmail,
     connect,
@@ -61,7 +61,7 @@ def _record_invoice_email(conn, scan_id: str, parsed: ParsedEmail) -> bool:
 
 
 def _record_helpdesk_email(conn, scan_id: str, parsed: ParsedEmail, invoice_work_id: str) -> bool:
-    """Returns True if this no-attachment, PO-referencing email was
+    """Returns True if this no-attachment, work_id-referencing email was
     recorded as a HELPDESK work item linked to invoice_work_id."""
     try:
         email_id = insert_email(
@@ -84,14 +84,16 @@ def _record_helpdesk_email(conn, scan_id: str, parsed: ParsedEmail, invoice_work
 
 
 def run_ingestion():
-    """Classifies each unread email by (attachment present, PO number
+    """Classifies each unread email by (attachment present, work_id
     referenced in subject/body):
-      - has an attachment            -> INVOICE, regardless of PO number.
-      - no attachment, PO referenced -> HELPDESK, linked to the invoice
-        that PO belongs to (only if that invoice has already been
-        processed -- helpdesk rows require a non-null invoice_work_id).
-      - no attachment, no PO found, or PO found but no matching invoice
-        yet -> not recorded; marked read so it isn't re-checked forever.
+      - has an attachment              -> INVOICE, regardless of work_id.
+      - no attachment, work_id referenced -> HELPDESK, linked to that
+        invoice (only if the referenced work_id is actually an
+        already-processed invoice -- helpdesk rows require a non-null
+        invoice_work_id).
+      - no attachment, no work_id found, or a work_id that isn't a known
+        invoice -> not recorded; marked read so it isn't re-checked
+        forever.
     """
     mail = connect()
 
@@ -100,31 +102,31 @@ def run_ingestion():
         with_attachment = [p for p in parsed_emails if p.attachments]
         without_attachment = [p for p in parsed_emails if not p.attachments]
 
-        po_candidates = []  # (parsed, po_number)
+        work_id_candidates = []  # (parsed, referenced_work_id)
         for parsed in without_attachment:
-            po_number = extract_po_number(parsed.subject, parsed.body)
-            if po_number is None:
-                # No attachment and nothing that looks like a PO reference
-                # -> nothing to do with it.
+            referenced_work_id = extract_work_id(parsed.subject, parsed.body)
+            if referenced_work_id is None:
+                # No attachment and nothing that looks like a work_id
+                # reference -> nothing to do with it.
                 mark_seen(mail, parsed.eid)
             else:
-                po_candidates.append((parsed, po_number))
+                work_id_candidates.append((parsed, referenced_work_id))
 
-        if not with_attachment and not po_candidates:
+        if not with_attachment and not work_id_candidates:
             print("No qualifying (invoice/helpdesk) emails this scan.")
             return
 
         processed_eids = []
 
         with get_connection() as conn:
-            # Resolve PO candidates against known invoices now, while a
-            # connection is open, so the scan's count_of_email reflects
+            # Resolve work_id candidates against known invoices now, while
+            # a connection is open, so the scan's count_of_email reflects
             # only emails that actually get recorded.
             helpdesk_candidates = []  # (parsed, invoice_work_id)
-            for parsed, po_number in po_candidates:
-                invoice_work_id = find_invoice_work_id_by_po(conn, po_number)
+            for parsed, referenced_work_id in work_id_candidates:
+                invoice_work_id = find_invoice_by_work_id(conn, referenced_work_id)
                 if invoice_work_id is None:
-                    print(f"PO {po_number!r} referenced in {parsed.subject!r} has no matching invoice yet -- not recorded")
+                    print(f"work_id {referenced_work_id!r} referenced in {parsed.subject!r} is not a known invoice -- not recorded")
                     mark_seen(mail, parsed.eid)
                     continue
                 helpdesk_candidates.append((parsed, invoice_work_id))
