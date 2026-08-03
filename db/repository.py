@@ -1,25 +1,12 @@
-import os
 from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Optional
 
-import certifi
 import psycopg2
 import psycopg2.extras
-from dotenv import load_dotenv
 
-from embeddings import embed_text
-
-load_dotenv()
-
-DB_URL = os.environ["COCKROACHDB_CONNECTION"]
-# The connection string uses sslmode=verify-full, which needs a root CA
-# bundle to validate the server certificate against. Point it at certifi's
-# bundle rather than relying on a system cert path that may not exist
-# (e.g. libpq's default ~/.postgresql/root.crt).
-if "sslrootcert=" not in DB_URL:
-    separator = "&" if "?" in DB_URL else "?"
-    DB_URL = f"{DB_URL}{separator}sslrootcert={certifi.where()}"
+import config
+from clients.embeddings_client import embed_text
 
 # Formats OCR might hand back in invoice_date, tried in order.
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d %b %Y", "%B %d, %Y")
@@ -38,7 +25,7 @@ def parse_invoice_date(raw: Optional[str]) -> Optional[date]:
 
 @contextmanager
 def get_connection():
-    conn = psycopg2.connect(DB_URL)
+    conn = psycopg2.connect(config.DB_URL)
     try:
         yield conn
     finally:
@@ -363,9 +350,9 @@ def append_log(conn, work_id: str, status: str, detail: Optional[str] = None) ->
 def insert_invoice_and_line_items(conn, work_id: str, invoice_data, vendor_embedding: Optional[str] = None):
     """Insert the (placeholder, until real invoice-population logic lands)
     invoice row plus its line_items, from an ocr.Invoice instance.
-    vendor_embedding is computed once by the caller (poller.py), since it's
-    also needed there for the vendor-similarity lookup before this insert
-    happens -- no reason to call the embedding model twice."""
+    vendor_embedding is computed once by the caller (invoice_extraction_service),
+    since it's also needed there for the vendor-similarity lookup before
+    this insert happens -- no reason to call the embedding model twice."""
     with conn.cursor() as cur:
         cur.execute(
             """

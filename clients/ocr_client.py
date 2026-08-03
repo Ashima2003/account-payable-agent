@@ -1,17 +1,12 @@
 import argparse
 import json
-import os
 from typing import List, Optional
 
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-MODEL = os.environ["LLM_MODEL"]
+import config
 
 
 # ------------------------------------------------------------------
@@ -60,17 +55,15 @@ Think of the task as:
 
 
 def pdf_bytes_to_structured_json(pdf_bytes: bytes) -> Invoice:
-    api_key = os.environ.get("LLM_API_KEY")
-
-    if not api_key:
+    if not config.LLM_API_KEY:
         raise RuntimeError(
             "Please set the LLM_API_KEY environment variable."
         )
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=config.LLM_API_KEY)
 
     response = client.models.generate_content(
-        model=MODEL,
+        model=config.LLM_MODEL,
         contents=[
             types.Content(
                 role="user",

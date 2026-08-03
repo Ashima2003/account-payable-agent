@@ -1,7 +1,6 @@
-import time
 import traceback
 
-from db import (
+from db.repository import (
     append_log,
     claim_work_item,
     fetch_line_item_comparison,
@@ -15,12 +14,10 @@ from db import (
     mark_status,
     parse_invoice_date,
 )
-from embeddings import embed_text
-from ocr import pdf_bytes_to_structured_json
-from s3_client import fetch_document_bytes
-from validation import build_duplicate_decline_reply, lines_match, vendor_is_match
-
-POLL_INTERVAL_SECONDS = 10
+from clients.embeddings_client import embed_text
+from clients.ocr_client import pdf_bytes_to_structured_json
+from clients.s3_client import fetch_document_bytes
+from services.validation import build_duplicate_decline_reply, lines_match, vendor_is_match
 
 
 def _check_duplicate(conn, work_id, invoice_data) -> bool:
@@ -137,17 +134,3 @@ def poll_once():
     with get_connection() as conn:
         for doc in fetch_unprocessed_invoice_documents(conn):
             process_document(conn, doc["work_id"], doc["document_link"])
-
-
-def run():
-    print(f"Polling every {POLL_INTERVAL_SECONDS}s for new invoice documents...")
-    while True:
-        try:
-            poll_once()
-        except Exception:
-            traceback.print_exc()
-        time.sleep(POLL_INTERVAL_SECONDS)
-
-
-if __name__ == "__main__":
-    run()

@@ -1,11 +1,9 @@
-import os
 from typing import List, Optional
 
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-load_dotenv()
+import config
 
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
@@ -16,10 +14,9 @@ _client: Optional[genai.Client] = None
 def _get_client() -> genai.Client:
     global _client
     if _client is None:
-        api_key = os.environ.get("LLM_API_KEY")
-        if not api_key:
+        if not config.LLM_API_KEY:
             raise RuntimeError("Please set the LLM_API_KEY environment variable.")
-        _client = genai.Client(api_key=api_key)
+        _client = genai.Client(api_key=config.LLM_API_KEY)
     return _client
 
 
