@@ -157,6 +157,34 @@ def insert_work_item_and_document(
     conn.commit()
 
 
+def find_invoice_work_id_by_po(conn, purchase_order: str) -> Optional[str]:
+    """Which validated invoice a PO number belongs to, so an incoming
+    helpdesk query that references that PO can be linked to it. helpdesk
+    rows require a non-null invoice_work_id by schema design -- a query
+    about a PO we haven't processed an invoice for yet can't be recorded
+    as a helpdesk item until that invoice exists."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT invoice_work_id FROM invoice WHERE purchase_order = %s LIMIT 1", (purchase_order,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_work_id: str) -> None:
+    """Insert the work_item (process_type=HELPDESK) and its 1:1 helpdesk
+    row together, in one transaction -- mirrors insert_work_item_and_document
+    for the invoice path."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_item (work_id, email_id, process_type) VALUES (%s, %s, %s)",
+            (work_id, email_id, "HELPDESK"),
+        )
+        cur.execute(
+            "INSERT INTO helpdesk (helpdesk_work_id, invoice_work_id) VALUES (%s, %s)",
+            (work_id, invoice_work_id),
+        )
+    conn.commit()
+
+
 def insert_invoice_source_and_line_items(conn, work_id: str, invoice_data):
     """Insert the raw (pre-validation) OCR output into invoice_source /
     line_item_source, as-is -- nulls stay null, no placeholder defaults.
