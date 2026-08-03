@@ -1,4 +1,5 @@
 import traceback
+from typing import Optional
 
 from db.repository import (
     append_log,
@@ -17,14 +18,15 @@ from db.repository import (
 from clients.embeddings_client import embed_text
 from clients.ocr_client import pdf_bytes_to_structured_json
 from clients.s3_client import fetch_document_bytes
+from services.notification_service import notify_sender
 from services.validation import build_duplicate_decline_reply, lines_match, vendor_is_match
 
 
-def _check_duplicate(conn, work_id, invoice_data) -> bool:
-    """Returns True if this invoice has already been processed -- in which
-    case this execution is marked SKIPPED (with a draft decline reply
-    logged) and the caller must not go on to insert it into
-    invoice/line_item."""
+def _check_duplicate(conn, work_id, invoice_data) -> Optional[str]:
+    """Returns the drafted decline reply if this invoice has already been
+    processed -- in which case this execution is marked SKIPPED and the
+    caller must not go on to insert it into invoice/line_item -- or None
+    if it isn't a duplicate."""
     duplicate_work_id = find_duplicate_invoice(
         conn,
         invoice_number=invoice_data.invoice_no or "UNKNOWN",
@@ -35,7 +37,7 @@ def _check_duplicate(conn, work_id, invoice_data) -> bool:
         exclude_work_id=work_id,
     )
     if duplicate_work_id is None:
-        return False
+        return None
 
     reply = build_duplicate_decline_reply(invoice_data.invoice_no, invoice_data.purchase_order)
     append_log(
@@ -44,7 +46,7 @@ def _check_duplicate(conn, work_id, invoice_data) -> bool:
     )
     mark_status(conn, work_id, "SKIPPED")
     print(f"[{work_id}] skipped: duplicate of {duplicate_work_id}")
-    return True
+    return reply
 
 
 def _check_po(conn, work_id, invoice_data) -> None:
@@ -111,7 +113,9 @@ def process_document(conn, work_id, document_link):
         # and the reference data duplicate/PO checks are run against.
         insert_invoice_source_and_line_items(conn, work_id, invoice_data)
 
-        if _check_duplicate(conn, work_id, invoice_data):
+        duplicate_reply = _check_duplicate(conn, work_id, invoice_data)
+        if duplicate_reply is not None:
+            notify_sender(conn, work_id, "SKIPPED", duplicate_reply)
             return
 
         _check_po(conn, work_id, invoice_data)
@@ -124,10 +128,13 @@ def process_document(conn, work_id, document_link):
         insert_invoice_and_line_items(conn, work_id, invoice_data, vendor_embedding)
         mark_status(conn, work_id, "EXTRACTION_COMPLETED")
         print(f"[{work_id}] extraction completed")
-    except Exception:
-        mark_status(conn, work_id, "EXTRACTION_FAILED")
+        notify_sender(conn, work_id, "EXTRACTION_COMPLETED")
+    except Exception as exc:
+        detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        mark_status(conn, work_id, "EXTRACTION_FAILED", detail=detail)
         print(f"[{work_id}] extraction failed:")
         traceback.print_exc()
+        notify_sender(conn, work_id, "EXTRACTION_FAILED", detail)
 
 
 def poll_once():

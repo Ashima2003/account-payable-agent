@@ -75,7 +75,7 @@ def claim_work_item(conn, work_id: str) -> bool:
     return won
 
 
-def mark_status(conn, work_id: str, status: str):
+def mark_status(conn, work_id: str, status: str, detail: Optional[str] = None):
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -85,8 +85,8 @@ def mark_status(conn, work_id: str, status: str):
             (work_id, status),
         )
         cur.execute(
-            "INSERT INTO work_execution_log (work_id, status) VALUES (%s, %s)",
-            (work_id, status),
+            "INSERT INTO work_execution_log (work_id, status, detail) VALUES (%s, %s, %s)",
+            (work_id, status, detail),
         )
     conn.commit()
 
@@ -157,6 +157,23 @@ def find_invoice_by_work_id(conn, work_id: str) -> Optional[str]:
         cur.execute("SELECT invoice_work_id FROM invoice WHERE invoice_work_id = %s", (work_id,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def fetch_sender_for_work_id(conn, work_id: str) -> Optional[dict]:
+    """The original sender/subject of the email that spawned this work_id,
+    so a status update (completed / failed / declined-as-duplicate) can be
+    emailed back to whoever sent it in the first place."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT e.email_from, e.email_subject
+            FROM work_item wi
+            JOIN email e ON e.email_id = wi.email_id
+            WHERE wi.work_id = %s
+            """,
+            (work_id,),
+        )
+        return cur.fetchone()
 
 
 def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_work_id: str) -> None:
