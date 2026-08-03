@@ -8,6 +8,8 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 
+from embeddings import embed_text
+
 load_dotenv()
 
 DB_URL = os.environ["COCKROACHDB_CONNECTION"]
@@ -185,11 +187,14 @@ def insert_invoice_source_and_line_items(conn, work_id: str, invoice_data):
                 """
                 INSERT INTO line_item_source (
                     invoice_work_id, line_number, description,
-                    quantity, unit_price, line_amount
+                    quantity, unit_price, line_amount, description_embedding
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (work_id, idx, li.description, li.quantity, li.unit_price, li.amount),
+                (
+                    work_id, idx, li.description, li.quantity, li.unit_price, li.amount,
+                    embed_text(li.description),
+                ),
             )
     conn.commit()
 
@@ -255,18 +260,60 @@ def find_po_in_source(conn, purchase_order: str, exclude_work_id: str) -> Option
         return row[0] if row else None
 
 
-def fetch_line_items_source(conn, invoice_work_id: str):
+def fetch_line_item_comparison(conn, current_work_id: str, source_work_id: str):
+    """Line-by-line comparison of two invoices' line_item_source rows,
+    joined on line_number. A FULL OUTER JOIN so a line present on only one
+    side (i.e. the two invoices have a different number of lines) shows up
+    as a row with NULLs on the other side, rather than silently being left
+    out. description_distance is computed by CockroachDB itself via the
+    <-> operator over the stored embeddings -- there are only ever a
+    handful of rows for one PO, so this needs no vector index, just an
+    exact distance calculation."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT line_number, quantity, unit_price, line_amount
-            FROM line_item_source
-            WHERE invoice_work_id = %s
-            ORDER BY line_number
+            SELECT
+                curr.line_number AS curr_line_number,
+                src.line_number AS src_line_number,
+                curr.quantity AS curr_quantity, curr.unit_price AS curr_unit_price,
+                curr.line_amount AS curr_line_amount,
+                src.quantity AS src_quantity, src.unit_price AS src_unit_price,
+                src.line_amount AS src_line_amount,
+                curr.description_embedding <-> src.description_embedding AS description_distance
+            FROM
+                (SELECT * FROM line_item_source WHERE invoice_work_id = %s) curr
+            FULL OUTER JOIN
+                (SELECT * FROM line_item_source WHERE invoice_work_id = %s) src
+            ON curr.line_number = src.line_number
+            ORDER BY COALESCE(curr.line_number, src.line_number)
             """,
-            (invoice_work_id,),
+            (current_work_id, source_work_id),
         )
         return cur.fetchall()
+
+
+def find_similar_vendor(conn, vendor_embedding: Optional[str], exclude_work_id: str) -> Optional[dict]:
+    """Nearest existing vendor by embedding distance, via the vector index
+    on invoice.vendor_embedding -- an ANN search over the whole table,
+    unlike the per-PO line-item comparison above. Returns the nearest
+    work_id/vendor_name/distance regardless of how close it is; the caller
+    decides what distance counts as "the same vendor". None if there's no
+    embedding to search with, or the invoice table is empty."""
+    if vendor_embedding is None:
+        return None
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT invoice_work_id, vendor_name, vendor_embedding <-> %s AS distance
+            FROM invoice
+            WHERE invoice_work_id != %s AND vendor_embedding IS NOT NULL
+            ORDER BY vendor_embedding <-> %s
+            LIMIT 1
+            """,
+            (vendor_embedding, exclude_work_id, vendor_embedding),
+        )
+        return cur.fetchone()
 
 
 def append_log(conn, work_id: str, status: str, detail: Optional[str] = None) -> None:
@@ -282,17 +329,21 @@ def append_log(conn, work_id: str, status: str, detail: Optional[str] = None) ->
     conn.commit()
 
 
-def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
+def insert_invoice_and_line_items(conn, work_id: str, invoice_data, vendor_embedding: Optional[str] = None):
     """Insert the (placeholder, until real invoice-population logic lands)
-    invoice row plus its line_items, from an ocr.Invoice instance."""
+    invoice row plus its line_items, from an ocr.Invoice instance.
+    vendor_embedding is computed once by the caller (poller.py), since it's
+    also needed there for the vendor-similarity lookup before this insert
+    happens -- no reason to call the embedding model twice."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO invoice (
                 invoice_work_id, invoice_number, invoice_date,
-                vendor_name, total_amount, invoice_currency, purchase_order
+                vendor_name, total_amount, invoice_currency, purchase_order,
+                vendor_embedding
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 work_id,
@@ -302,6 +353,7 @@ def insert_invoice_and_line_items(conn, work_id: str, invoice_data):
                 invoice_data.invoice_amount or 0,
                 invoice_data.currency or "USD",
                 invoice_data.purchase_order,
+                vendor_embedding,
             ),
         )
 

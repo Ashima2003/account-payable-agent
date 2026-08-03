@@ -18,6 +18,9 @@
 --   * `execution` holds the current/latest status per work_id (upserted on
 --     every step). `execution_log` is the append-only history of every
 --     status change. Write both in the same transaction.
+--   * VECTOR columns/indexes require `SET CLUSTER SETTING
+--     feature.vector_index.enabled = true;` (preview feature as of v25.2+)
+--     before this schema can be applied -- already set on the live cluster.
 -- ============================================================================
 
 CREATE TABLE email_scan (
@@ -75,13 +78,19 @@ CREATE TABLE invoice_source (
 -- written before validation -- a work_id can have line_item_source rows
 -- with no corresponding validated line_item rows yet.
 CREATE TABLE line_item_source (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    invoice_work_id   UUID NOT NULL REFERENCES invoice_source(invoice_work_id),
-    line_number       INT4 NOT NULL,
-    description       STRING,
-    quantity          DECIMAL(18,4),
-    unit_price        DECIMAL(18,4),
-    line_amount       DECIMAL(18,2),
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_work_id        UUID NOT NULL REFERENCES invoice_source(invoice_work_id),
+    line_number            INT4 NOT NULL,
+    description            STRING,
+    quantity               DECIMAL(18,4),
+    unit_price             DECIMAL(18,4),
+    line_amount            DECIMAL(18,2),
+    -- embedding of `description`, so PO validation can match line items on
+    -- meaning ("ROTI" vs "ROTY") instead of requiring an exact string match.
+    -- No vector index here -- comparisons are always scoped to one PO's
+    -- handful of lines via WHERE invoice_work_id = ..., not a search over
+    -- the whole table, so a plain column with the <-> operator is enough.
+    description_embedding  VECTOR(768),
     UNIQUE (invoice_work_id, line_number),
     INDEX idx_line_item_source_invoice (invoice_work_id, line_number)
 );
@@ -95,12 +104,18 @@ CREATE TABLE invoice (
     total_amount      DECIMAL(18,2) NOT NULL,
     invoice_currency  STRING(3) NOT NULL,
     purchase_order    STRING,   -- PO number, when the invoice references one; not every invoice has one
+    -- embedding of vendor_name -- lets vendor lookups match "Ashima Anand"
+    -- against "Ashima Anand Pvt Ltd" by meaning instead of exact string
+    -- equality. Indexed (unlike line_item_source.description_embedding)
+    -- because this is searched across the whole table, not one PO's rows.
+    vendor_embedding  VECTOR(768),
     -- candidate lookup for duplicate-invoice detection
     INDEX idx_invoice_dup_lookup (vendor_name, invoice_number, invoice_currency),
     -- exact 5-field duplicate check: invoice_number + purchase_order +
     -- invoice_date + total_amount + invoice_currency all matching means
     -- this invoice has already been processed -- decline re-processing it.
-    INDEX idx_invoice_duplicate_check (invoice_number, purchase_order, invoice_date, total_amount, invoice_currency)
+    INDEX idx_invoice_duplicate_check (invoice_number, purchase_order, invoice_date, total_amount, invoice_currency),
+    VECTOR INDEX idx_invoice_vendor_embedding (vendor_embedding)
 );
 
 -- One row per line on the invoice. line_number preserves the original
