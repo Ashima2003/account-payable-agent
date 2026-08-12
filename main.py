@@ -1,6 +1,7 @@
 import argparse
 import threading
 
+from logging_config import configure_logging
 from workers import (
     email_ingestion_worker,
     helpdesk_worker,
@@ -24,6 +25,8 @@ def main():
         help="Which polling worker to run",
     )
     args = parser.parse_args()
+
+    configure_logging()
 
     if args.worker != "all":
         _WORKERS[args.worker]()

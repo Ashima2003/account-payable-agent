@@ -1,5 +1,7 @@
 import argparse
 import json
+import logging
+import time
 from typing import List, Optional
 
 from google import genai
@@ -7,6 +9,8 @@ from google.genai import types
 from pydantic import BaseModel
 
 import config
+
+log = logging.getLogger("ap_agent.llm")
 
 
 # ------------------------------------------------------------------
@@ -62,6 +66,8 @@ def pdf_bytes_to_structured_json(pdf_bytes: bytes) -> Invoice:
 
     client = genai.Client(api_key=config.LLM_API_KEY)
 
+    log.info("llm generate_content model=%s task=ocr_extraction pdf_bytes=%d", config.LLM_MODEL, len(pdf_bytes))
+    start = time.monotonic()
     response = client.models.generate_content(
         model=config.LLM_MODEL,
         contents=[
@@ -80,6 +86,12 @@ def pdf_bytes_to_structured_json(pdf_bytes: bytes) -> Invoice:
             response_mime_type="application/json",
             response_schema=Invoice,
         ),
+    )
+    usage = getattr(response, "usage_metadata", None)
+    log.info(
+        "llm generate_content completed (%.1fms) tokens=%s",
+        (time.monotonic() - start) * 1000,
+        usage.total_token_count if usage else "?",
     )
 
     return Invoice.model_validate_json(response.text)

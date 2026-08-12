@@ -1,15 +1,44 @@
+import logging
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Optional
 
 import psycopg2
+import psycopg2.extensions
 import psycopg2.extras
 
 import config
 from clients.embeddings_client import embed_text
 
+log = logging.getLogger("ap_agent.db")
+
 # Formats OCR might hand back in invoice_date, tried in order.
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d %b %Y", "%B %d, %Y")
+
+
+class _LoggingExecuteMixin:
+    """Logs every query this cursor runs (statement + duration), tagged
+    with whatever trace_id is active (see logging_config.trace) -- so DB
+    activity for one work item shows up interleaved with its LLM/MCP
+    activity, in the order it actually happened, without every one of
+    this module's ~25 query functions needing its own logging call."""
+
+    def execute(self, query, vars=None):
+        start = time.monotonic()
+        try:
+            return super().execute(query, vars)
+        finally:
+            duration_ms = (time.monotonic() - start) * 1000
+            log.debug("query (%.1fms): %s", duration_ms, " ".join(str(query).split())[:300])
+
+
+class _LoggingCursor(_LoggingExecuteMixin, psycopg2.extensions.cursor):
+    pass
+
+
+class _LoggingDictCursor(_LoggingExecuteMixin, psycopg2.extras.RealDictCursor):
+    pass
 
 
 def _insert_outbox(cur, queue_name: str, payload: dict) -> None:
@@ -37,7 +66,7 @@ def parse_invoice_date(raw: Optional[str]) -> Optional[date]:
 
 @contextmanager
 def get_connection():
-    conn = psycopg2.connect(config.DB_URL)
+    conn = psycopg2.connect(config.DB_URL, cursor_factory=_LoggingCursor)
     try:
         yield conn
     finally:
@@ -46,7 +75,7 @@ def get_connection():
 
 def fetch_unprocessed_invoice_documents(conn):
     """document rows for INVOICE work items that have no work_execution row yet."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             """
             SELECT d.work_id, d.document_id, d.document_link
@@ -176,7 +205,7 @@ def fetch_sender_for_work_id(conn, work_id: str) -> Optional[dict]:
     """The original sender/subject of the email that spawned this work_id,
     so a status update (completed / failed / declined-as-duplicate) can be
     emailed back to whoever sent it in the first place."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             """
             SELECT e.email_from, e.email_subject
@@ -211,7 +240,7 @@ def fetch_helpdesk_query(conn, helpdesk_work_id: str) -> Optional[dict]:
     invoice_work_id it's about, for a HELPDESK work item -- everything
     services/helpdesk_query_service.py needs to build a prompt for the LLM
     and address the reply."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             """
             SELECT e.email_from, e.email_subject, e.email_content, h.invoice_work_id
@@ -337,7 +366,7 @@ def fetch_line_item_comparison(conn, current_work_id: str, source_work_id: str):
     <-> operator over the stored embeddings -- there are only ever a
     handful of rows for one PO, so this needs no vector index, just an
     exact distance calculation."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             """
             SELECT
@@ -370,7 +399,7 @@ def find_similar_vendor(conn, vendor_embedding: Optional[str], exclude_work_id: 
     if vendor_embedding is None:
         return None
 
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             """
             SELECT invoice_work_id, vendor_name, vendor_embedding <-> %s AS distance
@@ -450,7 +479,7 @@ def insert_outbox_only(conn, queue_name: str, payload: dict) -> None:
 
 def fetch_unpublished_outbox_messages(conn, limit: int = 50):
     """Rows the relay worker hasn't successfully published to SQS yet."""
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with conn.cursor(cursor_factory=_LoggingDictCursor) as cur:
         cur.execute(
             "SELECT id, queue_name, payload FROM queue_outbox WHERE NOT published ORDER BY created_at LIMIT %s",
             (limit,),

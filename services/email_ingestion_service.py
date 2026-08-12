@@ -1,4 +1,4 @@
-import traceback
+import logging
 import uuid
 
 from db.repository import (
@@ -20,6 +20,9 @@ from clients.gmail_client import (
     move_to_folder,
 )
 from clients.s3_client import upload_attachment_bytes
+from logging_config import trace
+
+log = logging.getLogger("ap_agent.ingestion")
 
 PROCESSED_FOLDER = "Processed"
 MAX_EMAILS_PER_SCAN = 50
@@ -31,15 +34,15 @@ def _format_email_content(parsed: ParsedEmail) -> str:
 
 def _record_attachment(conn, email_id: str, attachment) -> None:
     work_id = str(uuid.uuid4())
-    try:
-        document_link = upload_attachment_bytes(
-            work_id, attachment.filename, attachment.content_bytes
-        )
-        insert_work_item_and_document(conn, work_id, email_id, document_link)
-        print(f"[{work_id}] recorded {attachment.filename} -> {document_link}")
-    except Exception:
-        print(f"[{work_id}] failed to record attachment {attachment.filename!r}:")
-        traceback.print_exc()
+    with trace(work_id):
+        try:
+            document_link = upload_attachment_bytes(
+                work_id, attachment.filename, attachment.content_bytes
+            )
+            insert_work_item_and_document(conn, work_id, email_id, document_link)
+            log.info("recorded %s -> %s", attachment.filename, document_link)
+        except Exception:
+            log.exception("failed to record attachment %r", attachment.filename)
 
 
 def _record_invoice_email(conn, scan_id: str, parsed: ParsedEmail) -> bool:
@@ -51,8 +54,7 @@ def _record_invoice_email(conn, scan_id: str, parsed: ParsedEmail) -> bool:
             conn, scan_id, parsed.sender, parsed.subject, _format_email_content(parsed)
         )
     except Exception:
-        print(f"Failed to record email {parsed.subject!r}:")
-        traceback.print_exc()
+        log.exception("failed to record email %r", parsed.subject)
         return False
 
     for attachment in parsed.attachments:
@@ -69,19 +71,18 @@ def _record_helpdesk_email(conn, scan_id: str, parsed: ParsedEmail, invoice_work
             conn, scan_id, parsed.sender, parsed.subject, _format_email_content(parsed)
         )
     except Exception:
-        print(f"Failed to record helpdesk email {parsed.subject!r}:")
-        traceback.print_exc()
+        log.exception("failed to record helpdesk email %r", parsed.subject)
         return False
 
     work_id = str(uuid.uuid4())
-    try:
-        insert_work_item_and_helpdesk(conn, work_id, email_id, invoice_work_id)
-        print(f"[{work_id}] recorded helpdesk query {parsed.subject!r} -> invoice {invoice_work_id}")
-        return True
-    except Exception:
-        print(f"[{work_id}] failed to record helpdesk work item:")
-        traceback.print_exc()
-        return False
+    with trace(work_id):
+        try:
+            insert_work_item_and_helpdesk(conn, work_id, email_id, invoice_work_id)
+            log.info("recorded helpdesk query %r -> invoice %s", parsed.subject, invoice_work_id)
+            return True
+        except Exception:
+            log.exception("failed to record helpdesk work item")
+            return False
 
 
 def run_ingestion():
@@ -114,7 +115,7 @@ def run_ingestion():
                 work_id_candidates.append((parsed, referenced_work_id))
 
         if not with_attachment and not work_id_candidates and not other_candidates:
-            print("No emails this scan.")
+            log.info("no emails this scan")
             return
 
         processed_eids = []
@@ -127,36 +128,40 @@ def run_ingestion():
             for parsed, referenced_work_id in work_id_candidates:
                 invoice_work_id = find_invoice_by_work_id(conn, referenced_work_id)
                 if invoice_work_id is None:
-                    print(f"work_id {referenced_work_id!r} referenced in {parsed.subject!r} is not a known invoice -- routed to 'other'")
+                    log.info(
+                        "work_id %r referenced in %r is not a known invoice -- routed to 'other'",
+                        referenced_work_id, parsed.subject,
+                    )
                     other_candidates.append(parsed)
                     continue
                 helpdesk_candidates.append((parsed, invoice_work_id))
 
             scan_id = insert_email_scan(conn, len(with_attachment) + len(helpdesk_candidates))
-            print(
-                f"[{scan_id}] scan found {len(with_attachment)} invoice email(s), "
-                f"{len(helpdesk_candidates)} helpdesk email(s), {len(other_candidates)} other email(s)"
-            )
-
-            for parsed in with_attachment:
-                if _record_invoice_email(conn, scan_id, parsed):
-                    processed_eids.append(parsed.eid)
-
-            for parsed, invoice_work_id in helpdesk_candidates:
-                if _record_helpdesk_email(conn, scan_id, parsed, invoice_work_id):
-                    processed_eids.append(parsed.eid)
-
-            # 'other' emails aren't durable business records -- no
-            # work_item is created for them -- so they're marked seen
-            # immediately rather than added to processed_eids (which
-            # would move them to PROCESSED_FOLDER, a folder meant for
-            # emails that produced an actual invoice/helpdesk record).
-            for parsed in other_candidates:
-                insert_outbox_only(
-                    conn, "other",
-                    {"sender": parsed.sender, "subject": parsed.subject, "date": parsed.date},
+            with trace(scan_id):
+                log.info(
+                    "scan found %d invoice email(s), %d helpdesk email(s), %d other email(s)",
+                    len(with_attachment), len(helpdesk_candidates), len(other_candidates),
                 )
-                mark_seen(mail, parsed.eid)
+
+                for parsed in with_attachment:
+                    if _record_invoice_email(conn, scan_id, parsed):
+                        processed_eids.append(parsed.eid)
+
+                for parsed, invoice_work_id in helpdesk_candidates:
+                    if _record_helpdesk_email(conn, scan_id, parsed, invoice_work_id):
+                        processed_eids.append(parsed.eid)
+
+                # 'other' emails aren't durable business records -- no
+                # work_item is created for them -- so they're marked seen
+                # immediately rather than added to processed_eids (which
+                # would move them to PROCESSED_FOLDER, a folder meant for
+                # emails that produced an actual invoice/helpdesk record).
+                for parsed in other_candidates:
+                    insert_outbox_only(
+                        conn, "other",
+                        {"sender": parsed.sender, "subject": parsed.subject, "date": parsed.date},
+                    )
+                    mark_seen(mail, parsed.eid)
 
         # Only move emails whose rows are durably committed -- if we crash
         # before this point, they're simply retried (still unread, still
