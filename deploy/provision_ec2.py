@@ -39,40 +39,17 @@ What it does:
       bucket indefinitely.
 """
 
-import io
 import json
-import sys
-import tarfile
 import time
-from pathlib import Path
 
 import boto3
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-import config
+from _common import INSTANCE_NAME, REGION, S3_DEPLOY_KEY, build_tarball, config
 
-REGION = "eu-north-1"
 INSTANCE_TYPE = "t4g.small"
 ROLE_NAME = "ap-agent-ec2-role"
 INSTANCE_PROFILE_NAME = "ap-agent-ec2-profile"
 SECURITY_GROUP_NAME = "ap-agent-sg"
-INSTANCE_NAME = "ap-agent-worker"
-
-_EXCLUDE_DIRS = {".git", ".venv", "__pycache__", "deploy"}
-
-
-def build_tarball() -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for path in REPO_ROOT.rglob("*"):
-            if path.is_dir():
-                continue
-            rel = path.relative_to(REPO_ROOT)
-            if rel.parts[0] in _EXCLUDE_DIRS or path.suffix == ".pyc":
-                continue
-            tar.add(path, arcname=str(rel))
-    return buf.getvalue()
 
 
 def ensure_role(iam):
@@ -182,7 +159,7 @@ def main():
 
     print("1/6 packaging and uploading app tarball to S3...")
     tarball = build_tarball()
-    key = "deploy/app.tar.gz"
+    key = S3_DEPLOY_KEY
     s3.put_object(Bucket=config.AWS_S3_BUCKET, Key=key, Body=tarball, ServerSideEncryption="AES256")
     try:
         s3.put_bucket_lifecycle_configuration(
