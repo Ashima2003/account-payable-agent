@@ -6,6 +6,7 @@ from db.repository import (
     get_connection,
     insert_email,
     insert_email_scan,
+    insert_outbox_only,
     insert_work_item_and_document,
     insert_work_item_and_helpdesk,
 )
@@ -86,14 +87,15 @@ def _record_helpdesk_email(conn, scan_id: str, parsed: ParsedEmail, invoice_work
 def run_ingestion():
     """Classifies each unread email by (attachment present, work_id
     referenced in subject/body):
-      - has an attachment              -> INVOICE, regardless of work_id.
+      - has an attachment                 -> INVOICE, regardless of work_id.
       - no attachment, work_id referenced -> HELPDESK, linked to that
-        invoice (only if the referenced work_id is actually an
-        already-processed invoice -- helpdesk rows require a non-null
+        invoice, if the referenced work_id is actually an
+        already-processed invoice (helpdesk rows require a non-null
         invoice_work_id).
-      - no attachment, no work_id found, or a work_id that isn't a known
-        invoice -> not recorded; marked read so it isn't re-checked
-        forever.
+      - anything else (no attachment and no work_id, or a work_id that
+        isn't a known invoice) -> routed to the 'other' outbox queue for
+        visibility, then marked read so it isn't re-checked forever. No
+        work_item is created for these -- there's nothing to point one at.
     """
     mail = connect()
 
@@ -103,17 +105,16 @@ def run_ingestion():
         without_attachment = [p for p in parsed_emails if not p.attachments]
 
         work_id_candidates = []  # (parsed, referenced_work_id)
+        other_candidates = []   # parsed emails with nothing to classify them
         for parsed in without_attachment:
             referenced_work_id = extract_work_id(parsed.subject, parsed.body)
             if referenced_work_id is None:
-                # No attachment and nothing that looks like a work_id
-                # reference -> nothing to do with it.
-                mark_seen(mail, parsed.eid)
+                other_candidates.append(parsed)
             else:
                 work_id_candidates.append((parsed, referenced_work_id))
 
-        if not with_attachment and not work_id_candidates:
-            print("No qualifying (invoice/helpdesk) emails this scan.")
+        if not with_attachment and not work_id_candidates and not other_candidates:
+            print("No emails this scan.")
             return
 
         processed_eids = []
@@ -121,18 +122,21 @@ def run_ingestion():
         with get_connection() as conn:
             # Resolve work_id candidates against known invoices now, while
             # a connection is open, so the scan's count_of_email reflects
-            # only emails that actually get recorded.
+            # only emails that actually get recorded as INVOICE/HELPDESK.
             helpdesk_candidates = []  # (parsed, invoice_work_id)
             for parsed, referenced_work_id in work_id_candidates:
                 invoice_work_id = find_invoice_by_work_id(conn, referenced_work_id)
                 if invoice_work_id is None:
-                    print(f"work_id {referenced_work_id!r} referenced in {parsed.subject!r} is not a known invoice -- not recorded")
-                    mark_seen(mail, parsed.eid)
+                    print(f"work_id {referenced_work_id!r} referenced in {parsed.subject!r} is not a known invoice -- routed to 'other'")
+                    other_candidates.append(parsed)
                     continue
                 helpdesk_candidates.append((parsed, invoice_work_id))
 
             scan_id = insert_email_scan(conn, len(with_attachment) + len(helpdesk_candidates))
-            print(f"[{scan_id}] scan found {len(with_attachment)} invoice email(s), {len(helpdesk_candidates)} helpdesk email(s)")
+            print(
+                f"[{scan_id}] scan found {len(with_attachment)} invoice email(s), "
+                f"{len(helpdesk_candidates)} helpdesk email(s), {len(other_candidates)} other email(s)"
+            )
 
             for parsed in with_attachment:
                 if _record_invoice_email(conn, scan_id, parsed):
@@ -141,6 +145,18 @@ def run_ingestion():
             for parsed, invoice_work_id in helpdesk_candidates:
                 if _record_helpdesk_email(conn, scan_id, parsed, invoice_work_id):
                     processed_eids.append(parsed.eid)
+
+            # 'other' emails aren't durable business records -- no
+            # work_item is created for them -- so they're marked seen
+            # immediately rather than added to processed_eids (which
+            # would move them to PROCESSED_FOLDER, a folder meant for
+            # emails that produced an actual invoice/helpdesk record).
+            for parsed in other_candidates:
+                insert_outbox_only(
+                    conn, "other",
+                    {"sender": parsed.sender, "subject": parsed.subject, "date": parsed.date},
+                )
+                mark_seen(mail, parsed.eid)
 
         # Only move emails whose rows are durably committed -- if we crash
         # before this point, they're simply retried (still unread, still

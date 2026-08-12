@@ -12,6 +12,18 @@ from clients.embeddings_client import embed_text
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d %b %Y", "%B %d, %Y")
 
 
+def _insert_outbox(cur, queue_name: str, payload: dict) -> None:
+    """Transactional outbox: called with the same cursor (and therefore the
+    same not-yet-committed transaction) as the business write it's about,
+    so a later SQS publish failure just means the relay worker
+    (workers/outbox_relay_worker.py) retries it on its next pass, instead
+    of the message being silently lost."""
+    cur.execute(
+        "INSERT INTO queue_outbox (queue_name, payload) VALUES (%s, %s)",
+        (queue_name, psycopg2.extras.Json(payload)),
+    )
+
+
 def parse_invoice_date(raw: Optional[str]) -> Optional[date]:
     if not raw:
         return None
@@ -141,6 +153,7 @@ def insert_work_item_and_document(
             "INSERT INTO document (work_id, document_link) VALUES (%s, %s)",
             (work_id, document_link),
         )
+        _insert_outbox(cur, "invoice", {"work_id": work_id, "document_link": document_link})
     conn.commit()
 
 
@@ -189,6 +202,7 @@ def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_wor
             "INSERT INTO helpdesk (helpdesk_work_id, invoice_work_id) VALUES (%s, %s)",
             (work_id, invoice_work_id),
         )
+        _insert_outbox(cur, "helpdesk", {"work_id": work_id, "invoice_work_id": invoice_work_id})
     conn.commit()
 
 
@@ -403,4 +417,32 @@ def insert_invoice_and_line_items(conn, work_id: str, invoice_data, vendor_embed
                 """,
                 (work_id, idx, li.description, li.quantity, li.unit_price, li.amount or 0),
             )
+    conn.commit()
+
+
+def insert_outbox_only(conn, queue_name: str, payload: dict) -> None:
+    """For messages with no corresponding work_item -- e.g. an email that
+    didn't classify as INVOICE or HELPDESK at all, routed to the 'other'
+    queue purely for visibility instead of being silently dropped."""
+    with conn.cursor() as cur:
+        _insert_outbox(cur, queue_name, payload)
+    conn.commit()
+
+
+def fetch_unpublished_outbox_messages(conn, limit: int = 50):
+    """Rows the relay worker hasn't successfully published to SQS yet."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT id, queue_name, payload FROM queue_outbox WHERE NOT published ORDER BY created_at LIMIT %s",
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def mark_outbox_published(conn, outbox_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE queue_outbox SET published = true, published_at = now() WHERE id = %s",
+            (outbox_id,),
+        )
     conn.commit()
