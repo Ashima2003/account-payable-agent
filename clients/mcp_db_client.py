@@ -1,11 +1,15 @@
+import logging
 import shutil
+import time
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import ListToolsResult
+from mcp.types import CallToolResult, ListToolsResult
 
 import config
+
+log = logging.getLogger("ap_agent.mcp")
 
 # The server exposes ~84 tools (backups, changefeeds, user/role management,
 # DDL, ...) -- far more than a helpdesk query needs, and Gemini's function
@@ -38,6 +42,21 @@ class _FilteredClientSession(ClientSession):
             properties = tool.inputSchema.get("properties", {})
             for name in _DROP_PROPERTIES:
                 properties.pop(name, None)
+        return result
+
+    async def call_tool(self, name: str, arguments: dict = None, *args, **kwargs) -> CallToolResult:
+        start = time.monotonic()
+        log.info("mcp call_tool %s args=%s", name, arguments)
+        try:
+            result = await super().call_tool(name, arguments, *args, **kwargs)
+        except Exception:
+            log.exception("mcp call_tool %s raised after %.1fms", name, (time.monotonic() - start) * 1000)
+            raise
+        duration_ms = (time.monotonic() - start) * 1000
+        if result.is_error:
+            log.warning("mcp call_tool %s failed (%.1fms): %s", name, duration_ms, result.content)
+        else:
+            log.info("mcp call_tool %s completed (%.1fms)", name, duration_ms)
         return result
 
 # The community CockroachDB MCP server (github.com/amineelkouhen/mcp-cockroachdb),

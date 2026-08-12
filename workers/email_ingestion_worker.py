@@ -1,13 +1,17 @@
+import logging
 import time
 import traceback
 
+from logging_config import configure_logging
 from services.email_ingestion_service import run_ingestion
+
+log = logging.getLogger("ap_agent.ingestion")
 
 POLL_INTERVAL_SECONDS = 30
 
 
 def run():
-    print(f"Polling every {POLL_INTERVAL_SECONDS}s for new emails...")
+    log.info("polling every %ss for new emails...", POLL_INTERVAL_SECONDS)
     while True:
         try:
             run_ingestion()
@@ -17,4 +21,5 @@ def run():
 
 
 if __name__ == "__main__":
+    configure_logging()
     run()

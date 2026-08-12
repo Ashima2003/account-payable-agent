@@ -1,8 +1,10 @@
-import traceback
+import logging
 from typing import Optional
 
 from clients.mailer_client import send_email
 from db.repository import fetch_sender_for_work_id
+
+log = logging.getLogger("ap_agent.notify")
 
 # Only these are terminal, sender-facing outcomes -- PO_NOT_FOUND,
 # PO_VALIDATED, PO_VALIDATION_MISMATCH, VENDOR_MATCHED, VENDOR_NEW etc.
@@ -41,14 +43,13 @@ def notify_sender(conn, work_id: str, status: str, detail: Optional[str] = None)
     try:
         sender = fetch_sender_for_work_id(conn, work_id)
         if sender is None:
-            print(f"[{work_id}] no sender found -- skipping status notification")
+            log.warning("no sender found -- skipping status notification")
             return
 
         subject = f"Re: {sender['email_subject']} [Ref: {work_id}]"
         body = _build_body(work_id, status, detail)
 
         send_email(sender["email_from"], subject, body)
-        print(f"[{work_id}] status notification ({status}) sent to {sender['email_from']}")
+        log.info("status notification (%s) sent to %s", status, sender["email_from"])
     except Exception:
-        print(f"[{work_id}] failed to send status notification:")
-        traceback.print_exc()
+        log.exception("failed to send status notification")

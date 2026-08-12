@@ -1,9 +1,13 @@
+import logging
+import time
 from typing import List, Optional
 
 from google import genai
 from google.genai import types
 
 import config
+
+log = logging.getLogger("ap_agent.llm")
 
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
@@ -28,10 +32,13 @@ def embed_text(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
+    log.info("llm embed_content model=%s chars=%d", EMBEDDING_MODEL, len(text))
+    start = time.monotonic()
     response = _get_client().models.embed_content(
         model=EMBEDDING_MODEL,
         contents=text,
         config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIMENSIONS),
     )
+    log.info("llm embed_content completed (%.1fms)", (time.monotonic() - start) * 1000)
     values: List[float] = response.embeddings[0].values
     return "[" + ",".join(repr(v) for v in values) + "]"
