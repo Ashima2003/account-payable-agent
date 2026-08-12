@@ -1,4 +1,6 @@
+import gzip
 import io
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -10,18 +12,21 @@ import config  # noqa: E402
 REGION = "eu-north-1"
 INSTANCE_NAME = "ap-agent-worker"
 S3_DEPLOY_KEY = "deploy/app.tar.gz"
-
-_EXCLUDE_DIRS = {".git", ".venv", "__pycache__", "deploy"}
+DEPLOY_REF = "origin/main"
 
 
 def build_tarball() -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for path in REPO_ROOT.rglob("*"):
-            if path.is_dir():
-                continue
-            rel = path.relative_to(REPO_ROOT)
-            if rel.parts[0] in _EXCLUDE_DIRS or path.suffix == ".pyc":
-                continue
-            tar.add(path, arcname=str(rel))
-    return buf.getvalue()
+    """What's deployed is exactly what's committed on DEPLOY_REF -- not
+    local working-tree state -- so what's live is always traceable to a
+    specific, reviewable commit. `git archive` only includes tracked
+    files, so .env (deliberately gitignored, since it holds secrets)
+    is appended afterward, from whatever's on this machine right now."""
+    subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "origin", "main"], check=True)
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "archive", "--format=tar", DEPLOY_REF],
+        check=True, capture_output=True,
+    )
+    buf = io.BytesIO(proc.stdout)
+    with tarfile.open(fileobj=buf, mode="a") as tar:
+        tar.add(REPO_ROOT / ".env", arcname=".env")
+    return gzip.compress(buf.getvalue())
