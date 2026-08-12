@@ -4,7 +4,7 @@ import traceback
 from google import genai
 
 import config
-from clients.gmail_client import send_email
+from clients.mailer_client import send_email
 from clients.mcp_db_client import open_session
 from db.repository import append_log, fetch_helpdesk_query, get_connection, mark_status
 

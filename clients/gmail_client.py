@@ -1,9 +1,6 @@
 import imaplib
 import email
-import smtplib
 from email.header import decode_header
-from email.message import EmailMessage
-from email.utils import parseaddr
 from typing import List, NamedTuple, Optional, Tuple
 
 import config
@@ -48,25 +45,6 @@ def connect() -> imaplib.IMAP4_SSL:
     mail.login(config.EMAIL, config.APP_PASSWORD)
     mail.select("INBOX")
     return mail
-
-
-def send_email(to: str, subject: str, body: str) -> None:
-    """Sends a plaintext reply from the same mailbox `connect()` reads
-    from, reusing the same App Password (Gmail app passwords are valid for
-    both IMAP and SMTP). `to` may be a raw address or a "Name <addr>"
-    header value -- only the address part is used as the envelope
-    recipient."""
-    _, to_addr = parseaddr(to)
-
-    msg = EmailMessage()
-    msg["From"] = config.EMAIL
-    msg["To"] = to_addr
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(config.EMAIL, config.APP_PASSWORD)
-        smtp.send_message(msg)
 
 
 def _is_qualifying_attachment(content_type: str, filename: str) -> bool:
