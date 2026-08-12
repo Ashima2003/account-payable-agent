@@ -32,7 +32,7 @@ from _common import INSTANCE_NAME, REGION, S3_DEPLOY_KEY, build_tarball, config
 
 _REMOTE_SCRIPT = """#!/bin/bash
 set -euxo pipefail
-exec > /var/log/ap-agent-redeploy.log 2>&1
+exec > >(tee /var/log/ap-agent-redeploy.log) 2>&1
 
 systemctl stop ap-agent || true
 rm -rf /opt/account-payable-agent
