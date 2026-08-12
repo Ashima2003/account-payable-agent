@@ -1,11 +1,17 @@
 import argparse
 import threading
 
-from workers import email_ingestion_worker, invoice_extraction_worker, outbox_relay_worker
+from workers import (
+    email_ingestion_worker,
+    helpdesk_worker,
+    invoice_extraction_worker,
+    outbox_relay_worker,
+)
 
 _WORKERS = {
     "email-ingestion": email_ingestion_worker.run,
     "invoice-extraction": invoice_extraction_worker.run,
+    "helpdesk": helpdesk_worker.run,
     "outbox-relay": outbox_relay_worker.run,
 }
 

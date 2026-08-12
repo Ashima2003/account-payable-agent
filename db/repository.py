@@ -206,6 +206,25 @@ def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_wor
     conn.commit()
 
 
+def fetch_helpdesk_query(conn, helpdesk_work_id: str) -> Optional[dict]:
+    """The sender/subject/body of the original query email plus the
+    invoice_work_id it's about, for a HELPDESK work item -- everything
+    services/helpdesk_query_service.py needs to build a prompt for the LLM
+    and address the reply."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT e.email_from, e.email_subject, e.email_content, h.invoice_work_id
+            FROM helpdesk h
+            JOIN work_item wi ON wi.work_id = h.helpdesk_work_id
+            JOIN email e ON e.email_id = wi.email_id
+            WHERE h.helpdesk_work_id = %s
+            """,
+            (helpdesk_work_id,),
+        )
+        return cur.fetchone()
+
+
 def insert_invoice_source_and_line_items(conn, work_id: str, invoice_data):
     """Insert the raw (pre-validation) OCR output into invoice_source /
     line_item_source, as-is -- nulls stay null, no placeholder defaults.
