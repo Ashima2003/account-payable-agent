@@ -33,3 +33,12 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY")
 SQS_INVOICE_QUEUE_URL = os.environ.get("SQS_INVOICE_QUEUE_URL")
 SQS_HELPDESK_QUEUE_URL = os.environ.get("SQS_HELPDESK_QUEUE_URL")
 SQS_OTHER_QUEUE_URL = os.environ.get("SQS_OTHER_QUEUE_URL")
+
+# Dedicated read-only SQL role (SELECT-only grants -- see
+# invoice-helpdesk-workflow-schema.sql) used exclusively by the CockroachDB
+# MCP server so LLM-generated SQL, driven by untrusted inbound email text,
+# can never write to the database.
+CRDB_READONLY_URL = os.environ.get("COCKROACHDB_READONLY_CONNECTION")
+if CRDB_READONLY_URL and "sslrootcert=" not in CRDB_READONLY_URL:
+    _separator = "&" if "?" in CRDB_READONLY_URL else "?"
+    CRDB_READONLY_URL = f"{CRDB_READONLY_URL}{_separator}sslrootcert={certifi.where()}"
