@@ -17,10 +17,12 @@ Usage:
     4. python3 deploy/provision_ec2.py
 
 What it does:
-    - Packages the current working tree (code + .env) into a tarball and
-      uploads it to the existing AWS_S3_BUCKET under deploy/, via a
-      short-lived presigned URL (not made public) so the new instance can
-      fetch it with a single `curl` and no AWS credentials of its own.
+    - Packages whatever is currently on origin/main (code) plus this
+      machine's local .env (secrets, deliberately gitignored so they're
+      never committed) into a tarball, uploaded to the existing
+      AWS_S3_BUCKET under deploy/ via a short-lived presigned URL (not
+      made public) so the new instance can fetch it with a single `curl`
+      and no AWS credentials of its own.
     - Creates an IAM role + instance profile for the EC2 instance with
       only AmazonSSMManagedInstanceCore attached (so you can open a
       shell on it later via SSM Session Manager with no SSH key/open

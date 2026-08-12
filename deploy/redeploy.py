@@ -11,8 +11,11 @@ Usage (same admin AWS profile as provision_ec2.py):
     python3 deploy/redeploy.py
 
 What it does:
-    - Repackages the current working tree (code + .env) and re-uploads it
-      to the same S3 deploy/ location.
+    - Packages whatever is currently on origin/main (code) plus this
+      machine's local .env (secrets, deliberately gitignored so they're
+      never committed) and re-uploads it to the same S3 deploy/ location.
+      Merge/push to main first -- this does NOT deploy uncommitted local
+      changes or other branches.
     - Finds the running instance by its Name=ap-agent-worker tag.
     - Over SSM (no SSH needed): stops the service, wipes and re-extracts
       the app directory, re-syncs dependencies (uv pip install -- cheap
