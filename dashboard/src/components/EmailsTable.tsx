@@ -39,11 +39,72 @@ function TableHead() {
   )
 }
 
+/** Below `xl`, a 5-column table has no room to breathe -- nested
+ * horizontal scrolling inside a card works but is a poor mobile pattern
+ * (no visual cue there's more, easy to miss columns entirely). `xl`
+ * (not `sm`/`md`/`lg`) is deliberate: the persistent sidebar (Sidebar.tsx)
+ * appears at `md` and eats ~240px, so even at `lg` (1024px) the table
+ * only has ~700px to fit Sender/Subject/Type/Status/Received in --
+ * tried it, columns wrapped and clipped. `xl` (1280px) leaves enough
+ * room. A stacked card per email reuses the same visual language as the
+ * Activity Logs grid instead. */
+function MobileEmailCard({ email }: { email: EmailRow }) {
+  const sender = formatSender(email.sender)
+  return (
+    <div className="border-b border-border py-4 last:border-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-ink">{sender.name}</p>
+          <p className="truncate text-xs text-faint">{sender.address}</p>
+        </div>
+        <span className="shrink-0 text-xs text-faint">{formatRelativeTime(email.received_at)}</span>
+      </div>
+      <p className="mt-1.5 truncate text-sm text-ink">{email.subject}</p>
+      <div className="mt-2 flex items-center gap-2">
+        <TypeBadge type={email.type} />
+        <StatusBadge status={email.status} />
+      </div>
+    </div>
+  )
+}
+
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-14 text-faint">
       <Inbox size={28} strokeWidth={1.5} />
       <p className="text-sm">No emails yet</p>
+    </div>
+  )
+}
+
+function EmailList({ emails }: { emails: EmailRow[] }) {
+  return (
+    <>
+      <div className="xl:hidden">
+        {emails.map((email) => (
+          <MobileEmailCard key={email.email_id} email={email} />
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto xl:block">
+        <table className="w-full">
+          <TableHead />
+          <tbody>
+            {emails.map((email) => (
+              <EmailRowView key={email.email_id} email={email} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+function LoadingSkeleton({ count }: { count: number }) {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="h-11 animate-pulse rounded-lg bg-canvas" />
+      ))}
     </div>
   )
 }
@@ -58,8 +119,8 @@ export function RecentEmailsCard({
   onViewAll: () => void
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-surface p-6 shadow-[0_1px_2px_rgba(20,22,27,0.04)]">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="rounded-2xl border border-border bg-surface p-4 shadow-[0_1px_2px_rgba(20,22,27,0.04)] sm:p-6">
+      <div className="mb-2 flex items-center justify-between sm:mb-4">
         <h2 className="text-sm font-semibold text-ink">Recent emails</h2>
         <button
           onClick={onViewAll}
@@ -68,26 +129,7 @@ export function RecentEmailsCard({
           View all
         </button>
       </div>
-      {loading ? (
-        <div className="space-y-3">
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-11 animate-pulse rounded-lg bg-canvas" />
-          ))}
-        </div>
-      ) : emails.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <TableHead />
-            <tbody>
-              {emails.map((email) => (
-                <EmailRowView key={email.email_id} email={email} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {loading ? <LoadingSkeleton count={5} /> : emails.length === 0 ? <EmptyState /> : <EmailList emails={emails} />}
     </div>
   )
 }
@@ -108,8 +150,8 @@ export function AllEmailsCard({
   onBack: () => void
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-surface p-6 shadow-[0_1px_2px_rgba(20,22,27,0.04)]">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="rounded-2xl border border-border bg-surface p-4 shadow-[0_1px_2px_rgba(20,22,27,0.04)] sm:p-6">
+      <div className="mb-2 flex items-center justify-between sm:mb-4">
         <div>
           <h2 className="text-sm font-semibold text-ink">All emails</h2>
           <p className="text-xs text-faint">Page {page} of {Math.max(totalPages, 1)}</p>
@@ -122,25 +164,12 @@ export function AllEmailsCard({
         </button>
       </div>
       {loading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="h-11 animate-pulse rounded-lg bg-canvas" />
-          ))}
-        </div>
+        <LoadingSkeleton count={8} />
       ) : emails.length === 0 ? (
         <EmptyState />
       ) : (
         <>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <TableHead />
-              <tbody>
-                {emails.map((email) => (
-                  <EmailRowView key={email.email_id} email={email} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <EmailList emails={emails} />
           <div className="mt-4 flex items-center justify-end gap-2">
             <button
               disabled={page <= 1}
