@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from db.repository import (
+    fetch_invoice_original_sender,
     find_invoice_by_work_id,
     get_connection,
     insert_email,
@@ -10,7 +11,7 @@ from db.repository import (
     insert_work_item_and_document,
     insert_work_item_and_helpdesk,
 )
-from services.email_classification import extract_work_id
+from services.email_classification import extract_work_id, same_sender
 from clients.gmail_client import (
     ParsedEmail,
     connect,
@@ -134,6 +135,22 @@ def run_ingestion():
                     )
                     other_candidates.append(parsed)
                     continue
+
+                # work_ids are plain UUIDs quoted in plaintext reply
+                # subjects -- anyone who sees one (forwarded, CC'd, or
+                # simply guessed) could otherwise ask for that invoice's
+                # details. Only the address that originally submitted the
+                # invoice is allowed to raise a helpdesk query against it.
+                original_sender = fetch_invoice_original_sender(conn, referenced_work_id)
+                if not same_sender(original_sender, parsed.sender):
+                    log.warning(
+                        "work_id %r referenced by %r does not match the invoice's original "
+                        "sender %r -- routed to 'other', not answered",
+                        referenced_work_id, parsed.sender, original_sender,
+                    )
+                    other_candidates.append(parsed)
+                    continue
+
                 helpdesk_candidates.append((parsed, invoice_work_id))
 
             scan_id = insert_email_scan(conn, len(with_attachment) + len(helpdesk_candidates))
