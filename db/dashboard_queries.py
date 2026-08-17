@@ -131,3 +131,89 @@ def fetch_emails_page(conn, page: int, page_size: int) -> dict:
         rows = [_serialize_email_row(row) for row in cur.fetchall()]
 
     return {"emails": rows, "total": total, "page": page, "page_size": page_size}
+
+
+_WORK_ITEM_LIST_BASE = """
+    SELECT wi.work_id, wi.process_type, wi.created_at,
+           e.email_from, e.email_subject, we.status
+    FROM work_item wi
+    JOIN email e ON e.email_id = wi.email_id
+    LEFT JOIN work_execution we ON we.work_id = wi.work_id
+"""
+
+
+def _serialize_work_item_row(row: dict) -> dict:
+    return {
+        "work_id": row["work_id"],
+        "type": row["process_type"],
+        "sender": row["email_from"],
+        "subject": row["email_subject"],
+        "status": row["status"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+
+
+def fetch_work_items_page(conn, page: int, page_size: int) -> dict:
+    offset = (page - 1) * page_size
+    with conn.cursor(cursor_factory=_DictCursor) as cur:
+        cur.execute("SELECT count(*) AS n FROM work_item")
+        total = cur.fetchone()["n"]
+
+        cur.execute(
+            _WORK_ITEM_LIST_BASE + " ORDER BY wi.created_at DESC LIMIT %s OFFSET %s",
+            (page_size, offset),
+        )
+        rows = [_serialize_work_item_row(row) for row in cur.fetchall()]
+
+    return {"work_items": rows, "total": total, "page": page, "page_size": page_size}
+
+
+def fetch_work_item_detail(conn, work_id: str) -> dict | None:
+    """Context header (who/what/when/current status) plus the full,
+    chronological work_execution_log history for one work_id -- what the
+    Activity Logs detail view (dashboard/src/pages/WorkItemDetailPage.tsx)
+    renders as a timeline. None if work_id doesn't exist at all, so the
+    API can 404 instead of returning an empty-looking page."""
+    with conn.cursor(cursor_factory=_DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT wi.work_id, wi.process_type, wi.created_at,
+                   e.email_from, e.email_subject, we.status
+            FROM work_item wi
+            JOIN email e ON e.email_id = wi.email_id
+            LEFT JOIN work_execution we ON we.work_id = wi.work_id
+            WHERE wi.work_id = %s
+            """,
+            (work_id,),
+        )
+        header = cur.fetchone()
+        if header is None:
+            return None
+
+        cur.execute(
+            """
+            SELECT status, detail, timestamp
+            FROM work_execution_log
+            WHERE work_id = %s
+            ORDER BY timestamp ASC, log_id ASC
+            """,
+            (work_id,),
+        )
+        log_rows = cur.fetchall()
+
+    return {
+        "work_id": header["work_id"],
+        "type": header["process_type"],
+        "sender": header["email_from"],
+        "subject": header["email_subject"],
+        "status": header["status"],
+        "created_at": header["created_at"].isoformat() if header["created_at"] else None,
+        "log": [
+            {
+                "status": row["status"],
+                "detail": row["detail"],
+                "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+            }
+            for row in log_rows
+        ],
+    }
