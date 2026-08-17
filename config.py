@@ -42,3 +42,11 @@ CRDB_READONLY_URL = os.environ.get("COCKROACHDB_READONLY_CONNECTION")
 if CRDB_READONLY_URL and "sslrootcert=" not in CRDB_READONLY_URL:
     _separator = "&" if "?" in CRDB_READONLY_URL else "?"
     CRDB_READONLY_URL = f"{CRDB_READONLY_URL}{_separator}sslrootcert={certifi.where()}"
+
+# HTTP Basic Auth in front of the dashboard (api/app.py) -- it shows
+# vendor names, invoice amounts, and email content, so it isn't left open
+# on the internet just because the EC2 security group has to allow the
+# port in. Optional here (only the dashboard worker needs it) so the
+# other workers keep working without it set.
+DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME", "admin")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")

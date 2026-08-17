@@ -194,9 +194,38 @@ def find_invoice_by_work_id(conn, work_id: str) -> Optional[str]:
     exist yet, or exists but was never an invoice, can't be recorded as a
     helpdesk item. Returns work_id itself (unchanged) if valid, else None
     -- same Optional[str] shape as the other find_* lookups, so callers
-    don't need to special-case this one."""
+    don't need to special-case this one.
+
+    NOTE: this alone does not prove the caller is entitled to this
+    invoice's details -- work_ids are plain UUIDs referenced in plaintext
+    in reply subjects, so they can be forwarded, CC'd, or leaked to a
+    third party. Callers that will expose invoice data back to whoever
+    referenced the work_id (the email-ingestion HELPDESK classification,
+    the MCP query tool) must also check fetch_invoice_original_sender(...)
+    against the requester's own sender address."""
     with conn.cursor() as cur:
         cur.execute("SELECT invoice_work_id FROM invoice WHERE invoice_work_id = %s", (work_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def fetch_invoice_original_sender(conn, work_id: str) -> Optional[str]:
+    """The raw From header of the email that originally submitted this
+    invoice -- used to verify a later helpdesk query referencing this
+    work_id actually comes from the same sender (see
+    services/email_classification.py:same_sender), not just anyone who
+    happened to see the work_id."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.email_from
+            FROM invoice i
+            JOIN work_item wi ON wi.work_id = i.invoice_work_id
+            JOIN email e ON e.email_id = wi.email_id
+            WHERE i.invoice_work_id = %s
+            """,
+            (work_id,),
+        )
         row = cur.fetchone()
         return row[0] if row else None
 

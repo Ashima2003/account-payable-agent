@@ -1,4 +1,5 @@
 import re
+from email.utils import parseaddr
 from typing import Optional
 
 # work_id (and invoice_work_id, helpdesk_work_id, etc.) are standard random
@@ -19,3 +20,14 @@ def extract_work_id(subject: str, body: str) -> Optional[str]:
         if match:
             return match.group(0)
     return None
+
+
+def same_sender(a: Optional[str], b: Optional[str]) -> bool:
+    """Compares two raw From-header values by their address only, not the
+    full header string -- "Ashima Anand <a@x.com>" and "a@x.com" (or a
+    different display name on the same address) must count as the same
+    sender, since a mail client is free to format either email
+    differently across messages. Case-insensitive, since addresses are."""
+    addr_a = parseaddr(a or "")[1].lower()
+    addr_b = parseaddr(b or "")[1].lower()
+    return bool(addr_a) and addr_a == addr_b

@@ -3,6 +3,7 @@ import threading
 
 from logging_config import configure_logging
 from workers import (
+    dashboard_worker,
     email_ingestion_worker,
     helpdesk_worker,
     invoice_extraction_worker,
@@ -14,6 +15,11 @@ _WORKERS = {
     "invoice-extraction": invoice_extraction_worker.run,
     "helpdesk": helpdesk_worker.run,
     "outbox-relay": outbox_relay_worker.run,
+    # Last on purpose: "all" runs every worker but the last one on a
+    # background thread and the last one on the main thread (see below) --
+    # uvicorn installs SIGINT/SIGTERM handlers that only work from the
+    # main thread of the main interpreter, so the dashboard has to be it.
+    "dashboard": dashboard_worker.run,
 }
 
 
