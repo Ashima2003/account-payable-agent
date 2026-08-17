@@ -45,6 +45,7 @@ import json
 import time
 
 import boto3
+from botocore.exceptions import ClientError
 
 from _common import INSTANCE_NAME, REGION, S3_DEPLOY_KEY, build_tarball, config
 
@@ -90,6 +91,34 @@ def ensure_role(iam):
         print(f"instance profile {INSTANCE_PROFILE_NAME} already exists, reusing")
 
 
+DASHBOARD_PORT = 8000
+
+
+def _ensure_dashboard_ingress(ec2, sg_id: str) -> None:
+    try:
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[{
+                "IpProtocol": "tcp",
+                "FromPort": DASHBOARD_PORT,
+                "ToPort": DASHBOARD_PORT,
+                # Basic Auth-protected (see api/app.py) rather than
+                # restricted to a fixed IP -- simpler for a dashboard
+                # meant to be checked from wherever, at the cost of
+                # relying on that one layer instead of network-level
+                # restriction too. Worth tightening to a known IP/CIDR
+                # later if that tradeoff stops being acceptable.
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "dashboard (Basic Auth protected)"}],
+            }],
+        )
+        print(f"opened inbound tcp/{DASHBOARD_PORT} for the dashboard")
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "InvalidPermission.Duplicate":
+            print(f"inbound tcp/{DASHBOARD_PORT} already open")
+        else:
+            raise
+
+
 def ensure_security_group(ec2, vpc_id: str) -> str:
     existing = ec2.describe_security_groups(
         Filters=[
@@ -100,14 +129,15 @@ def ensure_security_group(ec2, vpc_id: str) -> str:
     if existing:
         sg_id = existing[0]["GroupId"]
         print(f"security group {SECURITY_GROUP_NAME} already exists, reusing {sg_id}")
-        return sg_id
+    else:
+        sg_id = ec2.create_security_group(
+            GroupName=SECURITY_GROUP_NAME,
+            Description=f"ap-agent-worker: inbound only on {DASHBOARD_PORT}, default outbound otherwise",
+            VpcId=vpc_id,
+        )["GroupId"]
+        print(f"created security group {sg_id}")
 
-    sg_id = ec2.create_security_group(
-        GroupName=SECURITY_GROUP_NAME,
-        Description="ap-agent-worker: no inbound rules, default outbound only",
-        VpcId=vpc_id,
-    )["GroupId"]
-    print(f"created security group {sg_id} (no inbound rules)")
+    _ensure_dashboard_ingress(ec2, sg_id)
     return sg_id
 
 

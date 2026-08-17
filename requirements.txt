@@ -5,3 +5,5 @@ psycopg2-binary
 boto3
 certifi
 mcp<2
+fastapi
+uvicorn[standard]
