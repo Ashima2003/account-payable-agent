@@ -73,7 +73,7 @@ export function DashboardPage() {
         />
         <StatCard
           icon={<MessageCircleQuestion size={22} />}
-          label="Helpdesk queries answered"
+          label="Helpdesk queries"
           value={metrics ? metrics.total_helpdesk_queries.toLocaleString() : '—'}
           accent="amber"
           loading={loading}
@@ -87,7 +87,7 @@ export function DashboardPage() {
         />
         <StatCard
           icon={<CircleCheck size={22} />}
-          label="Extraction success rate"
+          label="Pipeline success rate"
           value={metrics && metrics.success_rate !== null ? `${metrics.success_rate}%` : '—'}
           accent="rose"
           loading={loading}

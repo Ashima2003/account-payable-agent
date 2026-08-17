@@ -41,25 +41,21 @@ def fetch_metrics(conn) -> dict:
         )
         currency_row = cur.fetchone()
 
-        # Success rate over INVOICE work items only -- work_execution also
-        # holds HELPDESK_ANSWERED/HELPDESK_FAILED rows, which aren't part
-        # of "invoice extraction succeeded" and would skew this otherwise.
-        cur.execute(
-            """
-            SELECT we.status, count(*) AS n
-            FROM work_execution we
-            JOIN work_item wi ON wi.work_id = we.work_id
-            WHERE wi.process_type = 'INVOICE'
-            GROUP BY we.status
-            """
-        )
+        # Pipeline success rate across both work item types -- an invoice
+        # that failed extraction and a helpdesk query that got rejected
+        # (wrong sender, see services/email_classification.py:same_sender)
+        # or failed to answer are both "the pipeline didn't do the right
+        # thing", so both count against this single headline number
+        # rather than only ever reflecting invoice extraction.
+        cur.execute("SELECT status, count(*) AS n FROM work_execution GROUP BY status")
         status_counts = {row["status"]: row["n"] for row in cur.fetchall()}
 
-    completed = status_counts.get("EXTRACTION_COMPLETED", 0)
-    terminal_total = sum(
-        status_counts.get(s, 0) for s in ("EXTRACTION_COMPLETED", "EXTRACTION_FAILED", "SKIPPED")
+    successful = sum(status_counts.get(s, 0) for s in ("EXTRACTION_COMPLETED", "HELPDESK_ANSWERED"))
+    terminal_total = successful + sum(
+        status_counts.get(s, 0)
+        for s in ("EXTRACTION_FAILED", "SKIPPED", "HELPDESK_FAILED", "HELPDESK_REJECTED")
     )
-    success_rate = (completed / terminal_total * 100) if terminal_total else None
+    success_rate = (successful / terminal_total * 100) if terminal_total else None
 
     return {
         "total_invoices": total_invoices,

@@ -10,6 +10,8 @@ from db.repository import (
     insert_outbox_only,
     insert_work_item_and_document,
     insert_work_item_and_helpdesk,
+    insert_work_item_and_rejected_helpdesk,
+    mark_status,
 )
 from services.email_classification import extract_work_id, same_sender
 from clients.gmail_client import (
@@ -86,6 +88,44 @@ def _record_helpdesk_email(conn, scan_id: str, parsed: ParsedEmail, invoice_work
             return False
 
 
+def _record_rejected_helpdesk_email(
+    conn, scan_id: str, parsed: ParsedEmail, invoice_work_id: str, original_sender: str
+) -> bool:
+    """Same shape as _record_helpdesk_email, but for a work_id reference
+    that failed the sender-match check -- recorded as HELPDESK_REJECTED
+    (visible in the dashboard's Activity Logs, factored into the pipeline
+    success rate) instead of silently vanishing into the 'other' queue.
+    Never pushed to the helpdesk SQS queue, so the LLM never sees it and
+    no reply is ever sent."""
+    try:
+        email_id = insert_email(
+            conn, scan_id, parsed.sender, parsed.subject, _format_email_content(parsed)
+        )
+    except Exception:
+        log.exception("failed to record rejected helpdesk email %r", parsed.subject)
+        return False
+
+    work_id = str(uuid.uuid4())
+    with trace(work_id):
+        try:
+            insert_work_item_and_rejected_helpdesk(conn, work_id, email_id, invoice_work_id)
+            mark_status(
+                conn, work_id, "HELPDESK_REJECTED",
+                detail=(
+                    f"sender {parsed.sender!r} does not match invoice {invoice_work_id}'s "
+                    f"original sender {original_sender!r}"
+                ),
+            )
+            log.warning(
+                "rejected helpdesk query %r -> invoice %s (sender mismatch)",
+                parsed.subject, invoice_work_id,
+            )
+            return True
+        except Exception:
+            log.exception("failed to record rejected helpdesk work item")
+            return False
+
+
 def run_ingestion():
     """Classifies each unread email by (attachment present, work_id
     referenced in subject/body):
@@ -93,11 +133,16 @@ def run_ingestion():
       - no attachment, work_id referenced -> HELPDESK, linked to that
         invoice, if the referenced work_id is actually an
         already-processed invoice (helpdesk rows require a non-null
-        invoice_work_id).
+        invoice_work_id) *and* the sender matches who originally
+        submitted it -- a work_id that resolves to a real invoice but
+        was referenced by a different sender is recorded as
+        HELPDESK_REJECTED (visible, not silently dropped) rather than
+        answered.
       - anything else (no attachment and no work_id, or a work_id that
-        isn't a known invoice) -> routed to the 'other' outbox queue for
-        visibility, then marked read so it isn't re-checked forever. No
-        work_item is created for these -- there's nothing to point one at.
+        isn't a known invoice at all) -> routed to the 'other' outbox
+        queue for visibility, then marked read so it isn't re-checked
+        forever. No work_item is created for these -- there's nothing to
+        point one at.
     """
     mail = connect()
 
@@ -126,6 +171,7 @@ def run_ingestion():
             # a connection is open, so the scan's count_of_email reflects
             # only emails that actually get recorded as INVOICE/HELPDESK.
             helpdesk_candidates = []  # (parsed, invoice_work_id)
+            rejected_candidates = []  # (parsed, invoice_work_id, original_sender)
             for parsed, referenced_work_id in work_id_candidates:
                 invoice_work_id = find_invoice_by_work_id(conn, referenced_work_id)
                 if invoice_work_id is None:
@@ -143,21 +189,20 @@ def run_ingestion():
                 # invoice is allowed to raise a helpdesk query against it.
                 original_sender = fetch_invoice_original_sender(conn, referenced_work_id)
                 if not same_sender(original_sender, parsed.sender):
-                    log.warning(
-                        "work_id %r referenced by %r does not match the invoice's original "
-                        "sender %r -- routed to 'other', not answered",
-                        referenced_work_id, parsed.sender, original_sender,
-                    )
-                    other_candidates.append(parsed)
+                    rejected_candidates.append((parsed, invoice_work_id, original_sender))
                     continue
 
                 helpdesk_candidates.append((parsed, invoice_work_id))
 
-            scan_id = insert_email_scan(conn, len(with_attachment) + len(helpdesk_candidates))
+            scan_id = insert_email_scan(
+                conn, len(with_attachment) + len(helpdesk_candidates) + len(rejected_candidates)
+            )
             with trace(scan_id):
                 log.info(
-                    "scan found %d invoice email(s), %d helpdesk email(s), %d other email(s)",
-                    len(with_attachment), len(helpdesk_candidates), len(other_candidates),
+                    "scan found %d invoice email(s), %d helpdesk email(s), "
+                    "%d rejected helpdesk email(s), %d other email(s)",
+                    len(with_attachment), len(helpdesk_candidates),
+                    len(rejected_candidates), len(other_candidates),
                 )
 
                 for parsed in with_attachment:
@@ -166,6 +211,10 @@ def run_ingestion():
 
                 for parsed, invoice_work_id in helpdesk_candidates:
                     if _record_helpdesk_email(conn, scan_id, parsed, invoice_work_id):
+                        processed_eids.append(parsed.eid)
+
+                for parsed, invoice_work_id, original_sender in rejected_candidates:
+                    if _record_rejected_helpdesk_email(conn, scan_id, parsed, invoice_work_id, original_sender):
                         processed_eids.append(parsed.eid)
 
                 # 'other' emails aren't durable business records -- no

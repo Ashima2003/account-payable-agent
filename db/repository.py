@@ -264,6 +264,29 @@ def insert_work_item_and_helpdesk(conn, work_id: str, email_id: str, invoice_wor
     conn.commit()
 
 
+def insert_work_item_and_rejected_helpdesk(conn, work_id: str, email_id: str, invoice_work_id: str) -> None:
+    """A HELPDESK work item that failed the sender-match check (see
+    services/email_classification.py:same_sender) -- work_item + helpdesk
+    rows are still created, same as insert_work_item_and_helpdesk, so the
+    attempt is visible in the dashboard's Activity Logs and factored into
+    the pipeline success rate instead of vanishing into the 'other' queue
+    with no durable record at all. Unlike insert_work_item_and_helpdesk,
+    nothing is pushed to the helpdesk outbox/SQS queue -- the LLM must
+    never see this one, or the whole point of the sender check is
+    defeated. Caller still needs to mark_status(..., 'HELPDESK_REJECTED',
+    detail=...) separately, same as any other status transition."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_item (work_id, email_id, process_type) VALUES (%s, %s, %s)",
+            (work_id, email_id, "HELPDESK"),
+        )
+        cur.execute(
+            "INSERT INTO helpdesk (helpdesk_work_id, invoice_work_id) VALUES (%s, %s)",
+            (work_id, invoice_work_id),
+        )
+    conn.commit()
+
+
 def fetch_helpdesk_query(conn, helpdesk_work_id: str) -> Optional[dict]:
     """The sender/subject/body of the original query email plus the
     invoice_work_id it's about, for a HELPDESK work item -- everything

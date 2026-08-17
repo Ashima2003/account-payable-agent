@@ -10,6 +10,7 @@ const DOT_CLASSES: Record<string, string> = {
   HELPDESK_ANSWERED: 'bg-accent-green',
   EXTRACTION_FAILED: 'bg-accent-rose',
   HELPDESK_FAILED: 'bg-accent-rose',
+  HELPDESK_REJECTED: 'bg-accent-rose',
   SKIPPED: 'bg-accent-amber',
   EXTRACTION_STARTED: 'bg-accent-blue',
 }

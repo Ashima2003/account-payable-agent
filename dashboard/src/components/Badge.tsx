@@ -9,6 +9,7 @@ const STATUS_CLASSES: Record<string, string> = {
   HELPDESK_ANSWERED: 'bg-accent-green-soft text-accent-green',
   EXTRACTION_FAILED: 'bg-accent-rose-soft text-accent-rose',
   HELPDESK_FAILED: 'bg-accent-rose-soft text-accent-rose',
+  HELPDESK_REJECTED: 'bg-accent-rose-soft text-accent-rose',
   SKIPPED: 'bg-accent-amber-soft text-accent-amber',
   EXTRACTION_STARTED: 'bg-accent-blue-soft text-accent-blue',
 }
